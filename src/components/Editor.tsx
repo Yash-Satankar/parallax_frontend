@@ -76,6 +76,7 @@ import { ExportDialog } from './ExportDialog'
 import { HistoryPanel } from './HistoryPanel'
 import { fade, panelTransition } from '../lib/motion'
 import { cn } from '../lib/cn'
+import { useCollab } from '../lib/useCollab'
 
 export function Editor() {
   const reduce = useReducedMotion()
@@ -225,6 +226,37 @@ export function Editor() {
     originStart: number
     originDuration: number
   } | null>(null)
+
+  const collab = useCollab(projectId, {
+    onClipInsert: (newClip) => {
+      setClips((current) => {
+        if (current.some((c) => c.id === newClip.id)) return current
+        return [...current, newClip]
+      })
+    },
+    onClipDelete: (clipId) => {
+      setClips((current) => current.filter((c) => c.id !== clipId))
+      setSelectedId((current) => (current === clipId ? null : current))
+    },
+    onClipFieldUpdate: (clipId, fields) => {
+      setClips((current) =>
+        current.map((clip) => {
+          if (clip.id !== clipId) return clip
+          return { ...clip, ...fields }
+        }),
+      )
+    },
+    onRemoteSync: () => {
+      if (projectId) {
+        void refreshHistory(projectId)
+      }
+    },
+  })
+
+  useEffect(() => {
+    collab.sendPresence(Math.round(currentTime * PROJECT_FPS), selectedId)
+  }, [currentTime, selectedId, collab])
+
 
   const refreshMedia = useCallback(async (id: string) => {
     setMediaLoading(true)
@@ -1113,6 +1145,7 @@ export function Editor() {
         onUndo={() => void undoLast()}
         onRedo={() => void redoLast()}
         exporting={exporting}
+        peers={collab.peers}
         onExport={() => {
           if (!projectId) {
             setToast('Create a project before exporting')
