@@ -48,7 +48,7 @@ export function TopBar({
           {projects.length ? (
             <Select value={projectId} onValueChange={onProject}>
               <SelectTrigger
-                className="h-8 w-[132px] border-line bg-well px-2.5 text-[6px]"
+                className="h-8 w-[132px] border-line bg-well px-2.5 text-[12px]"
                 aria-label="Current project"
               >
                 <span className="truncate">
