@@ -39,6 +39,10 @@ export function useCollab(
     onClipDelete?: (clipId: string) => void
     onClipFieldUpdate?: (clipId: string, fields: Record<string, unknown>) => void
     onRemoteSync?: () => void
+    /** Opt-in: called when a remote peer broadcasts their playback position. */
+    onPlaybackSync?: (frame: number, fps: number, isPlaying: boolean, serverTimeMs: number, clientId: string) => void
+    /** Phase 5: called when a peer relays an EncodedVideoChunk payload. */
+    onFrameChunk?: (clipId: string, timestampUs: number, isKeyFrame: boolean, data: string) => void
   } = {},
 ) {
   const [peers, setPeers] = useState<RemotePeer[]>([])
@@ -46,7 +50,6 @@ export function useCollab(
   const wsRef = useRef<WebSocket | null>(null)
   const myColorRef = useRef<string>(randomColor())
   const myNameRef = useRef<string>(randomName())
-  const localPresenceTimerRef = useRef<number | null>(null)
   const optionsRef = useRef(options)
   optionsRef.current = options
 
@@ -150,6 +153,35 @@ export function useCollab(
                 }
                 break
               }
+              case 'playback_sync': {
+                const p = payload as {
+                  client_id: string
+                  frame: number
+                  fps: number
+                  is_playing: boolean
+                  server_time_ms: number
+                }
+                if (p?.client_id) {
+                  optionsRef.current.onPlaybackSync?.(
+                    p.frame, p.fps, p.is_playing, p.server_time_ms, p.client_id,
+                  )
+                }
+                break
+              }
+              case 'frame_chunk': {
+                const p = payload as {
+                  clip_id: string
+                  timestamp_us: number
+                  is_key_frame: boolean
+                  data: string
+                }
+                if (p?.clip_id && p?.data) {
+                  optionsRef.current.onFrameChunk?.(
+                    p.clip_id, p.timestamp_us, p.is_key_frame, p.data,
+                  )
+                }
+                break
+              }
             }
           } catch {
             // Ignore malformed messages gracefully
@@ -182,9 +214,9 @@ export function useCollab(
     return () => {
       isUnmounted = true
       if (reconnectTimer) window.clearTimeout(reconnectTimer)
-      if (localPresenceTimerRef.current) window.clearTimeout(localPresenceTimerRef.current)
-      if (wsRef.current) {
-        wsRef.current.close()
+      const ws = wsRef.current
+      if (ws) {
+        ws.close()
         wsRef.current = null
       }
       setConnected(false)
@@ -226,6 +258,28 @@ export function useCollab(
     }
   }, [])
 
+  /**
+   * Broadcast local playback position to all collaborators (opt-in sync).
+   * Debouncing is the caller's responsibility — use useSyncedPlayback for that.
+   */
+  const sendPlaybackSync = useCallback((frame: number, fps: number, isPlaying: boolean) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return
+    try {
+      wsRef.current.send(JSON.stringify({
+        type: 'playback_sync',
+        payload: {
+          client_id: '', // server fills in the real clientID
+          frame,
+          fps,
+          is_playing: isPlaying,
+          server_time_ms: Date.now(),
+        },
+      }))
+    } catch {
+      // Ignore transient WS errors
+    }
+  }, [])
+
   return {
     peers,
     connected,
@@ -233,5 +287,9 @@ export function useCollab(
     myName: myNameRef.current,
     sendPresence,
     sendFieldUpdate,
+    /** Broadcast local playback state for opt-in Follow Playhead sync. */
+    sendPlaybackSync,
+    /** Expose the raw WebSocket ref so useSyncedPlayback can attach listeners. */
+    wsRef,
   }
 }

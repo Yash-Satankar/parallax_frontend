@@ -21,6 +21,8 @@ import { IconButton } from './ui'
 import { cn } from '../lib/cn'
 import { propertyAt } from '../lib/keyframes'
 
+import { detectGPUCapabilities, type GPUCapability } from '../lib/webgpu/capabilities'
+
 type Props = {
   currentTime: number
   isPlaying: boolean
@@ -50,6 +52,12 @@ export function PreviewStage({
   onToggleMute,
   onToggleSafe,
 }: Props) {
+  const [gpuCapability, setGpuCapability] = useState<GPUCapability>('unknown')
+
+  useEffect(() => {
+    detectGPUCapabilities().then((caps) => setGpuCapability(caps.renderMode)).catch(() => {})
+  }, [])
+
   const reduce = useReducedMotion()
   const filter = [
     `contrast(${1 + grade.contrast * 0.18})`,
@@ -137,6 +145,22 @@ export function PreviewStage({
             <>
               <span className="text-dim">·</span>
               <span className="font-mono text-dim">{frameLabel}</span>
+            </>
+          )}
+          {gpuCapability !== 'unknown' && (
+            <>
+              <span className="text-dim">·</span>
+              <span
+                className={cn(
+                  'rounded px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider font-semibold',
+                  gpuCapability === 'webgpu'
+                    ? 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                    : 'border border-amber-500/30 bg-amber-500/10 text-amber-400',
+                )}
+                title={gpuCapability === 'webgpu' ? 'Hardware-accelerated WebGPU rendering active' : 'Canvas2D GPU fallback rendering active'}
+              >
+                {gpuCapability === 'webgpu' ? '⚡ GPU (WebGPU)' : '⚡ GPU (Canvas2D)'}
+              </span>
             </>
           )}
         </div>

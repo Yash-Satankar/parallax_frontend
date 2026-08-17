@@ -1,5 +1,8 @@
 export type ToolId = 'media' | 'titles' | 'audio' | 'effects' | 'transitions' | 'history'
 
+/** Rendering capability of the current browser for the preview stage. */
+export type GPUCapability = 'webgpu' | 'canvas2d' | 'unknown'
+
 export type TrackKind = 'video' | 'audio' | 'title'
 
 export type MediaKind = 'video' | 'audio' | 'title'

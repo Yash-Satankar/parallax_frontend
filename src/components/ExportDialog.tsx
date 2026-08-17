@@ -6,6 +6,9 @@ import { SEQUENCE_SOURCE } from '../lib/program'
 import { fade } from '../lib/motion'
 import { cn } from '../lib/cn'
 
+import { exportAndDownload, type ExportFormat as ClientExportFormat, type ExportQuality as ClientExportQuality } from '../lib/webcodecs/exportPipeline'
+import { detectGPUCapabilities } from '../lib/webgpu/capabilities'
+
 type SourceOption = {
   id: string
   label: string
@@ -23,6 +26,7 @@ type Props = {
   busy: boolean
   onClose: () => void
   onExport: (body: ExportRequest) => void
+  clips?: Clip[]
 }
 
 const formats: { id: ExportFormat; label: string; hint: string }[] = [
@@ -66,6 +70,7 @@ export function ExportDialog({
   busy,
   onClose,
   onExport,
+  clips = [],
 }: Props) {
   const reduce = useReducedMotion()
   const sources = useMemo(
@@ -82,6 +87,14 @@ export function ExportDialog({
   const [start, setStart] = useState('0')
   const [duration, setDuration] = useState('')
   const [filename, setFilename] = useState(defaultFilename(projectName, sources[0]))
+  const [engine, setEngine] = useState<'server' | 'client'>('server')
+  const [clientProgress, setClientProgress] = useState<number | null>(null)
+  const [clientError, setClientError] = useState<string | null>(null)
+  const [hasWebCodecs, setHasWebCodecs] = useState(false)
+
+  useEffect(() => {
+    detectGPUCapabilities().then((c) => setHasWebCodecs(c.webcodecs)).catch(() => {})
+  }, [])
 
   const source = sources.find((item) => item.id === sourceId) ?? sources[0]
   const videoLike = format !== 'mp3'
@@ -93,10 +106,43 @@ export function ExportDialog({
     }
   }, [sourceId, sources])
 
-  function submit() {
+  async function submit() {
     if (!source) return
     const startSec = rangeMode === 'custom' ? Math.max(0, Number(start) || 0) : 0
     const durationSec = rangeMode === 'custom' ? Math.max(0, Number(duration) || 0) : 0
+    const outName = filename.trim() || defaultFilename(projectName, source)
+
+    if (engine === 'client' && (format === 'mp4' || format === 'webm') && clips.length > 0) {
+      setClientProgress(0)
+      setClientError(null)
+      try {
+        const assetMap = new Map<string, File>()
+        for (const a of assets) {
+          if (a.path) assetMap.set(a.path, a as unknown as File)
+        }
+        await exportAndDownload(
+          clips,
+          assetMap,
+          {
+            format: format as ClientExportFormat,
+            quality: quality as ClientExportQuality,
+            fps: fps || 30,
+            width: resolution === '3840x2160' ? 3840 : resolution === '1280x720' ? 1280 : 1920,
+            height: resolution === '3840x2160' ? 2160 : resolution === '1280x720' ? 720 : 1080,
+            grade: {},
+          },
+          `${outName}.${format}`,
+          (pct) => setClientProgress(pct),
+        )
+        setClientProgress(null)
+        onClose()
+      } catch (err) {
+        setClientError(err instanceof Error ? err.message : String(err))
+        setClientProgress(null)
+      }
+      return
+    }
+
     onExport({
       source: source.path,
       format,
@@ -106,7 +152,7 @@ export function ExportDialog({
       audio: format === 'mp3' ? true : format === 'gif' ? false : audio,
       start: startSec || undefined,
       duration: durationSec || undefined,
-      filename: filename.trim() || defaultFilename(projectName, source),
+      filename: outName,
     })
   }
 
@@ -161,6 +207,43 @@ export function ExportDialog({
                   <option key={item.id} value={item.id}>{item.label}</option>
                 ))}
               </select>
+            </Field>
+
+            <Field label="Export Engine">
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEngine('server')}
+                  className={cn(
+                    'flex flex-col items-start rounded-lg border p-2.5 text-left transition-colors',
+                    engine === 'server'
+                      ? 'border-line-strong bg-wash-strong text-cream'
+                      : 'border-line text-mute hover:border-line-strong hover:text-cream',
+                  )}
+                >
+                  <span className="text-[12px] font-medium">Server (FFmpeg)</span>
+                  <span className="mt-0.5 text-[10px] text-dim">High compatibility & server rendering</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEngine('client')}
+                  disabled={!hasWebCodecs}
+                  className={cn(
+                    'flex flex-col items-start rounded-lg border p-2.5 text-left transition-colors disabled:opacity-30',
+                    engine === 'client'
+                      ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
+                      : 'border-line text-mute hover:border-line-strong hover:text-cream',
+                  )}
+                >
+                  <span className="flex items-center gap-1 text-[12px] font-medium">
+                    <span>Client (GPU)</span>
+                    <span className="rounded bg-emerald-500/20 px-1 py-0.2 text-[8px] font-bold text-emerald-400 uppercase">Fast</span>
+                  </span>
+                  <span className="mt-0.5 text-[10px] text-dim">
+                    {hasWebCodecs ? 'Hardware-accelerated on your GPU' : 'WebCodecs not supported in browser'}
+                  </span>
+                </button>
+              </div>
             </Field>
 
             <div>
@@ -269,10 +352,31 @@ export function ExportDialog({
           </div>
         )}
 
+        {clientError && (
+          <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 p-2.5 text-[11px] text-red-300">
+            {clientError}
+          </div>
+        )}
+
+        {clientProgress !== null && (
+          <div className="mt-4 space-y-1.5">
+            <div className="flex justify-between text-[11px] text-cream">
+              <span>Rendering on GPU (WebCodecs)…</span>
+              <span>{Math.round(clientProgress * 100)}%</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-wash-strong">
+              <div
+                className="h-full rounded-full bg-emerald-400 transition-all duration-150"
+                style={{ width: `${clientProgress * 100}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         <div className="mt-5 flex justify-end gap-2">
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || clientProgress !== null}
             onClick={onClose}
             className="h-9 rounded-md px-3 text-[12px] text-mute hover:bg-wash hover:text-cream"
           >
@@ -280,10 +384,10 @@ export function ExportDialog({
           </button>
           <button
             type="submit"
-            disabled={!source || busy}
+            disabled={!source || busy || clientProgress !== null}
             className="h-9 rounded-md bg-cream px-4 text-[12px] font-medium text-ink disabled:opacity-40"
           >
-            {busy ? 'Exporting…' : 'Export'}
+            {busy || clientProgress !== null ? 'Exporting…' : 'Export'}
           </button>
         </div>
       </motion.form>

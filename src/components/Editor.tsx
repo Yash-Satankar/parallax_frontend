@@ -1318,6 +1318,7 @@ export function Editor() {
             sequenceDuration={duration}
             hasSequence={clips.length > 0}
             busy={exporting}
+            clips={clips}
             onClose={() => {
               if (!exporting) setExportOpen(false)
             }}
