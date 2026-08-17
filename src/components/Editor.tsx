@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from 'framer-motion'
-import type { ChatMessage, Clip, DirectorActivity, Grade, MediaAsset, ToolId } from '../types'
+import { formatClock } from '../lib/time'
+import type { ChatMessage, Clip, DirectorActivity, Grade, MediaAsset, SearchResult, ToolId } from '../types'
 import {
   PROJECT_FPS,
 } from '../data/project'
@@ -74,6 +75,7 @@ import { Timeline } from './Timeline'
 import { ChatPanel, ChatRail } from './ChatPanel'
 import { ExportDialog } from './ExportDialog'
 import { HistoryPanel } from './HistoryPanel'
+import { AudioToolbar } from './AudioToolbar'
 import { fade, panelTransition } from '../lib/motion'
 import { cn } from '../lib/cn'
 import { useCollab } from '../lib/useCollab'
@@ -716,6 +718,29 @@ export function Editor() {
   const selectedIds = useMemo(() => new Set(selectedId ? linkedIds(clips, selectedId) : []), [clips, selectedId])
   const canUnlink = selectedIds.size > 1
 
+  const handleAddSearchResult = useCallback(
+    (res: SearchResult) => {
+      const segDuration = Math.max(0.1, res.end_sec - res.start_sec)
+      const asset: MediaAsset = {
+        id: res.file_id,
+        name: `${res.media_path.split('/').pop() || 'Clip'} (${formatClock(res.start_sec)})`,
+        kind: res.kind === 'transcript' ? 'audio' : 'video',
+        duration: segDuration,
+        src: res.content_url,
+        path: res.media_path,
+        thumb: res.thumbnail_url,
+      }
+      const newClips = clipsFromAsset(asset, currentTime)
+      newClips.forEach((c) => {
+        c.sourceIn = res.start_sec
+        c.sourceDuration = segDuration
+      })
+      setClips((prev) => placeClips(prev, newClips, editMode, currentTime))
+      setToast(`Added clip segment (${formatClock(res.start_sec)} – ${formatClock(res.end_sec)})`)
+    },
+    [currentTime, editMode],
+  )
+
   function setToolAndPanel(id: ToolId) {
     if (id === tool && panelOpen) {
       setPanelOpen(false)
@@ -1184,9 +1209,11 @@ export function Editor() {
                   assets={assets}
                   loading={mediaLoading}
                   hasProject={!!projectId}
+                  projectId={projectId}
                   onDuration={(id, nextDuration) => applyMediaDuration(id, nextDuration)}
                   onFrame={(id, width, height) => applyMediaFrame(id, width, height)}
                   onAdd={(asset) => addAsset(asset)}
+                  onAddSearchResult={handleAddSearchResult}
                   onDelete={(asset) => void deleteAsset(asset)}
                 />
               )}
@@ -1217,6 +1244,11 @@ export function Editor() {
             onToggleMute={() => setMuted((m) => !m)}
             onToggleSafe={() => setSafeArea((s) => !s)}
           />
+          {selected && (selected.kind === 'audio' || selected.kind === 'video' || selected.mediaType === 'video' || selected.mediaType === 'audio') && (
+            <div className="flex items-center justify-end px-3 py-1 bg-well/80 border-t border-line">
+              <AudioToolbar selectedClip={selected} onRunAction={(prompt) => void send(prompt)} />
+            </div>
+          )}
           <Timeline
             clips={clips}
             selectedId={selectedId}
@@ -1428,6 +1460,12 @@ function toolLabel(name: string) {
     redo_project_change: 'Staging redo',
     restore_project_revision: 'Restoring project revision',
     create_project_checkpoint: 'Creating project checkpoint',
+    search_footage: 'Searching footage & transcripts',
+    remove_dead_air: 'Cutting dead air & silence',
+    audio_duck: 'Ducking background music',
+    audio_cleanup: 'Cleaning background noise',
+    volume_leveling: 'Normalizing audio loudness',
+    polish_audio: 'Running audio polish suite',
   }
   return labels[name] ?? name.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
 }

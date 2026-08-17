@@ -95,3 +95,15 @@ export type Grade = {
   contrast: number
   saturation: number
 }
+
+export type SearchResult = {
+  file_id: string
+  media_path: string
+  content_url: string
+  thumbnail_url?: string
+  start_sec: number
+  end_sec: number
+  kind: 'frame' | 'transcript'
+  text: string
+  relevance_score: number
+}
