@@ -2,7 +2,7 @@ import { Download, Plus, Redo2, Share, Trash2, Undo2, Upload } from 'lucide-reac
 import { motion, useReducedMotion } from 'framer-motion'
 import { PROJECT_FPS, PROJECT_RES } from '../data/project'
 import type { ProjectRecord } from '../lib/api'
-import type { RemotePeer } from '../lib/useCollab'
+
 import { softSpring } from '../lib/motion'
 import { ThemeToggle } from './ThemeToggle'
 import { IconButton, Logo, Pill } from './ui'
@@ -23,7 +23,6 @@ type Props = {
   canRedo?: boolean
   onUndo?: () => void
   onRedo?: () => void
-  peers?: RemotePeer[]
 }
 
 export function TopBar({
@@ -41,7 +40,6 @@ export function TopBar({
   canRedo,
   onUndo,
   onRedo,
-  peers = [],
 }: Props) {
   const reduce = useReducedMotion()
   return (
@@ -109,25 +107,6 @@ export function TopBar({
           <span className="text-dim">/</span>
           <span className="font-mono">{PROJECT_RES}</span>
         </div>
-        {peers.length > 0 && (
-          <div className="flex items-center -space-x-1.5 mr-1" title={`${peers.length} collaborator${peers.length > 1 ? 's' : ''} active`}>
-            {peers.slice(0, 4).map((peer) => (
-              <div
-                key={peer.client_id}
-                className="grid size-6 place-items-center rounded-full border border-panel text-[10px] font-bold text-white shadow-sm"
-                style={{ backgroundColor: peer.color || '#3b82f6' }}
-                title={peer.name || 'Collaborator'}
-              >
-                {(peer.name || 'C').charAt(0).toUpperCase()}
-              </div>
-            ))}
-            {peers.length > 4 && (
-              <div className="grid size-6 place-items-center rounded-full border border-panel bg-well text-[10px] font-medium text-mute">
-                +{peers.length - 4}
-              </div>
-            )}
-          </div>
-        )}
         <motion.button
           type="button"
           whileHover={reduce ? undefined : { y: -1 }}

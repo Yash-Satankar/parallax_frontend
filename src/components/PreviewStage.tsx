@@ -22,7 +22,7 @@ import { IconButton } from './ui'
 import { cn } from '../lib/cn'
 import { propertyAt } from '../lib/keyframes'
 
-import { detectGPUCapabilities, type GPUCapability } from '../lib/webgpu/capabilities'
+// GPU capabilities detection removed in upstream
 
 type Props = {
   currentTime: number
@@ -60,11 +60,6 @@ export function PreviewStage({
   onToggleSafe,
 }: Props) {
   const [forceVideo, setForceVideo] = useState(false)
-  const [gpuCapability, setGpuCapability] = useState<GPUCapability>('unknown')
-
-  useEffect(() => {
-    detectGPUCapabilities().then((caps) => setGpuCapability(caps.renderMode)).catch(() => {})
-  }, [])
 
   const reduce = useReducedMotion()
   const filter = [
@@ -160,22 +155,7 @@ export function PreviewStage({
               <span className="font-mono text-dim">{frameLabel}</span>
             </>
           )}
-          {gpuCapability !== 'unknown' && (
-            <>
-              <span className="text-dim">·</span>
-              <span
-                className={cn(
-                  'rounded px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider font-semibold',
-                  gpuCapability === 'webgpu'
-                    ? 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                    : 'border border-amber-500/30 bg-amber-500/10 text-amber-400',
-                )}
-                title={gpuCapability === 'webgpu' ? 'Hardware-accelerated WebGPU rendering active' : 'Canvas2D GPU fallback rendering active'}
-              >
-                {gpuCapability === 'webgpu' ? '⚡ GPU (WebGPU)' : '⚡ GPU (Canvas2D)'}
-              </span>
-            </>
-          )}
+
         </div>
         <div className="flex items-center gap-0.5">
           <IconButton label="Safe area" active={safeArea} onClick={onToggleSafe}>
@@ -304,7 +284,7 @@ export function PreviewStage({
                   className="pointer-events-none absolute whitespace-pre-wrap"
                   style={titleVisualStyle(program.overlay.clip, currentTime)}
                 >
-                  {renderTitleOverlay(program.overlay.clip, currentTime)}
+                  {renderTitleOverlay(program.overlay.clip)}
                 </motion.div>
               )}
           </AnimatePresence>
@@ -629,24 +609,10 @@ function titleVisualStyle(clip: Clip, time: number): CSSProperties {
   }
 }
 
-function renderTitleOverlay(clip: Clip, time: number) {
+function renderTitleOverlay(clip: Clip) {
   const title = clip.title
   if (!title) return clip.name || null
-  if (!title.words || title.words.length === 0) return title.text || clip.name || null
-
-  // Highlight the active word based on timeline time (time is timeline seconds)
-  return (
-    <div>
-      {title.words.map((w, i) => {
-        const active = time >= (w.startSec ?? 0) && time < (w.endSec ?? Infinity)
-        return (
-          <span key={i} style={{ marginRight: 6, color: active ? (title.highlightColor ?? '#ffe600') : title.fill ?? '#fff', transform: active ? `scale(${title.activeScale ?? 1})` : undefined, display: 'inline-block' }}>
-            {w.word}
-          </span>
-        )
-      })}
-    </div>
-  )
+  return title.text || clip.name || null
 }
 
 function ProgramAudio({
