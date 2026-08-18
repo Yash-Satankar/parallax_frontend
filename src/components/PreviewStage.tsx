@@ -54,6 +54,7 @@ export function PreviewStage({
   onToggleMute,
   onToggleSafe,
 }: Props) {
+  const [forceVideo, setForceVideo] = useState(false)
   const [gpuCapability, setGpuCapability] = useState<GPUCapability>('unknown')
 
   useEffect(() => {
@@ -170,7 +171,7 @@ export function PreviewStage({
           <IconButton label="Safe area" active={safeArea} onClick={onToggleSafe}>
             <Scan size={14} />
           </IconButton>
-          <IconButton label="Expand preview">
+          <IconButton label={forceVideo ? 'Using video' : 'Use video'} active={forceVideo} onClick={() => setForceVideo((s) => !s)}>
             <Maximize2 size={14} />
           </IconButton>
         </div>
@@ -479,6 +480,11 @@ function PreviewVideo({
 
     const onReady = () => {
       if (cancelled) return
+      // Debug logging to help diagnose black preview issues
+      try {
+        // eslint-disable-next-line no-console
+        console.log('PreviewVideo ready', { src, readyState: video.readyState, videoWidth: video.videoWidth, videoHeight: video.videoHeight })
+      } catch {}
       reportFrame()
       syncMediaClock(
         video,
