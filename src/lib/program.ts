@@ -14,6 +14,7 @@ export type ProgramFrame = {
   time: number
   video?: ProgramLayer
   overlay?: ProgramLayer
+  captions?: ProgramLayer
   audio: ProgramLayer[]
   gap: boolean
 }
@@ -21,11 +22,13 @@ export type ProgramFrame = {
 export function programAtTime(clips: Clip[], time: number): ProgramFrame {
   const videoClip = clipAtTime(clips, time, 'video')
   const titleClip = clipAtTime(clips, time, 'title')
+  const captionClip = clipAtTime(clips, time, 'caption')
   const audioClips = clipsAtTime(clips, time, 'audio')
   return {
     time,
     video: layerFor(videoClip, time),
     overlay: layerFor(titleClip, time),
+    captions: layerFor(captionClip, time),
     audio: audioClips.map((clip) => ({ clip, sourceTime: clipSourceTime(clip, time) })),
     gap: videoClip == null,
   }

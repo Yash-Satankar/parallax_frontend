@@ -159,13 +159,66 @@ textarea {
   }
 }
 
+.chat-message-enter {
+  animation: chat-message-in 0.3s ease forwards;
+}
+
+@keyframes chat-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.stream-ink {
+  mask-image: linear-gradient(
+    to bottom,
+    #000 0%,
+    #000 calc(100% - 2.1em),
+    rgb(0 0 0 / 0.62) calc(100% - 0.85em),
+    rgb(0 0 0 / 0.22)
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 0%,
+    #000 calc(100% - 2.1em),
+    rgb(0 0 0 / 0.62) calc(100% - 0.85em),
+    rgb(0 0 0 / 0.22)
+  );
+}
+
+.stream-glyph {
+  opacity: 0;
+  animation: stream-glyph-in 0.9s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes stream-glyph-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .preview-plate,
   .chrome {
     transition: none;
   }
 
-  .select-menu {
+  .select-menu,
+  .chat-message-enter,
+  .stream-glyph {
     animation: none;
+  }
+
+  .stream-ink {
+    mask-image: none;
+    -webkit-mask-image: none;
   }
 }

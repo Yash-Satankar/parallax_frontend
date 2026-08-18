@@ -1,6 +1,6 @@
 import { useRef, useState, type DragEvent, type PointerEvent } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
-import { Eye, Link2, Magnet, Scissors, Type, Unlink, Volume2, X } from 'lucide-react'
+import { Captions, Eye, Link2, Magnet, Scissors, Type, Unlink, Volume2, X } from 'lucide-react'
 import type { Clip, MediaAsset, Track } from '../types'
 import { PROJECT_FPS, markers, tracks } from '../data/project'
 import { formatClock } from '../lib/time'
@@ -22,6 +22,7 @@ import { snapTime } from '../lib/timeline'
 const LANE: Record<Track['kind'], number> = {
   video: 56,
   title: 36,
+  caption: 30,
   audio: 42,
 }
 const HEADER = 72
@@ -152,7 +153,7 @@ export function Timeline({
   }
 
   return (
-    <div className="chrome flex h-[248px] shrink-0 flex-col border-t border-line bg-panel">
+    <div className="chrome flex h-[280px] shrink-0 flex-col border-t border-line bg-panel">
       <div className="flex min-h-10 shrink-0 items-center gap-3 border-b border-line px-3">
         <div className="flex shrink-0 items-center gap-2">
           <span className="text-[10px] font-medium tracking-[0.16em] text-mute uppercase">Timeline</span>
@@ -430,6 +431,8 @@ function TrackLane({
             <Volume2 size={10} />
           ) : track.kind === 'title' ? (
             <Type size={10} />
+          ) : track.kind === 'caption' ? (
+            <Captions size={10} />
           ) : (
             <Eye size={10} />
           )}
@@ -652,7 +655,9 @@ function ClipBlock({
           ? `linear-gradient(180deg, rgb(0 0 0 / 0.15), rgb(0 0 0 / 0.45)), url(${clip.thumb}) center/cover`
           : clip.kind === 'audio'
             ? 'linear-gradient(180deg, #16352c, #10241f)'
-            : 'linear-gradient(180deg, #2a2418, #1b1710)',
+            : clip.kind === 'caption'
+              ? 'linear-gradient(180deg, #243848, #16232e)'
+              : 'linear-gradient(180deg, #2a2418, #1b1710)',
       }}
     >
       {clip.mediaType === 'video' && clip.src && clip.kind !== 'audio' && (

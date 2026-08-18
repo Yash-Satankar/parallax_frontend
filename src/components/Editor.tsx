@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from 'framer-motion'
-import { formatClock } from '../lib/time'
-import type { ChatMessage, Clip, DirectorActivity, Grade, MediaAsset, SearchResult, ToolId } from '../types'
+import type { ChatMessage, Clip, DirectorActivity, Grade, MediaAsset, MediaIndexState, ToolId } from '../types'
 import {
   PROJECT_FPS,
 } from '../data/project'
@@ -34,9 +33,11 @@ import {
 import {
   createProject as createRemoteProject,
   createProjectChat,
+  deleteProject,
   deleteProjectChat,
   deleteProjectMedia,
   downloadProjectFile,
+  API_BASE,
   exportProjectMedia,
   getProjectChat,
   getProjectTimeline,
@@ -65,6 +66,7 @@ import {
   type ProjectHistory,
   type ExportRequest,
   type SavedChatMessage,
+  type HistoryMessage,
   type TimelineTransition,
 } from '../lib/api'
 import { TopBar } from './TopBar'
@@ -75,18 +77,15 @@ import { Timeline } from './Timeline'
 import { ChatPanel, ChatRail } from './ChatPanel'
 import { ExportDialog } from './ExportDialog'
 import { HistoryPanel } from './HistoryPanel'
-import { AudioToolbar } from './AudioToolbar'
-import { CaptionToolbar } from './CaptionToolbar'
-import { ReframeToolbar } from './ReframeToolbar'
 import { fade, panelTransition } from '../lib/motion'
 import { cn } from '../lib/cn'
-import { useCollab } from '../lib/useCollab'
+import { createStreamTextQueue, type StreamTextQueue } from '../lib/streamText'
+import { stripThoughtMarkup } from '../lib/thought'
 
 export function Editor() {
   const reduce = useReducedMotion()
   const [tool, setTool] = useState<ToolId>('media')
   const [panelOpen, setPanelOpen] = useState(true)
-  const [splitPreview, setSplitPreview] = useState(false)
   const [chatOpen, setChatOpen] = useState(true)
   const [mediaWidth, setMediaWidth] = useState(() => readNumberPref('parallax.mediaWidth', 268, 220, 420))
   const [chatWidth, setChatWidth] = useState(() => readNumberPref('parallax.chatWidth', 360, 300, 520))
@@ -108,6 +107,10 @@ export function Editor() {
   const activityRef = useRef<DirectorActivity[]>([])
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState(false)
+  const pendingRef = useRef(false)
+  pendingRef.current = pending
+  const messagesRef = useRef<ChatMessage[]>([])
+  messagesRef.current = messages
   const [grade] = useState<Grade>({ warmth: 0, contrast: 0.15, saturation: 0.1 })
   const [toast, setToast] = useState<string | null>(null)
   const [projects, setProjects] = useState<ProjectRecord[]>([])
@@ -118,6 +121,9 @@ export function Editor() {
   const [sessionId, setSessionId] = useState('')
   const [chats, setChats] = useState<ChatRecord[]>([])
   const [createOpen, setCreateOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteName, setDeleteName] = useState('')
+  const [deletingProject, setDeletingProject] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [settings, setSettings] = useState<LLMSettings | null>(null)
@@ -126,9 +132,17 @@ export function Editor() {
   ))
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+  const streamQueueRef = useRef<StreamTextQueue | null>(null)
+  const streamGenRef = useRef(0)
   useEffect(() => {
     activityRef.current = activity
   }, [activity])
+  useEffect(() => {
+    return () => {
+      streamGenRef.current += 1
+      streamQueueRef.current?.reset()
+    }
+  }, [])
   const [projectNameDraft, setProjectNameDraft] = useState('')
   const [creatingProject, setCreatingProject] = useState(false)
   const [history, setHistory] = useState<ProjectHistory | null>(null)
@@ -213,7 +227,9 @@ export function Editor() {
   pxPerSecondRef.current = pxPerSecond
   const currentTimeRef = useRef(currentTime)
   currentTimeRef.current = currentTime
+  const [revision, setRevision] = useState(0)
   const revisionRef = useRef(0)
+  revisionRef.current = revision
   const timelineMetaRef = useRef<{ canvas: { width: number; height: number }; transitions: TimelineTransition[] }>({ canvas: { width: 1920, height: 1080 }, transitions: [] })
   const lastSavedRef = useRef('')
   const timelineReadyRef = useRef(false)
@@ -232,59 +248,29 @@ export function Editor() {
     originDuration: number
   } | null>(null)
 
-  const collab = useCollab(projectId, {
-    onClipInsert: (newClip) => {
-      setClips((current) => {
-        if (current.some((c) => c.id === newClip.id)) return current
-        return [...current, newClip]
-      })
-    },
-    onClipDelete: (clipId) => {
-      setClips((current) => current.filter((c) => c.id !== clipId))
-      setSelectedId((current) => (current === clipId ? null : current))
-    },
-    onClipFieldUpdate: (clipId, fields) => {
-      setClips((current) =>
-        current.map((clip) => {
-          if (clip.id !== clipId) return clip
-          return { ...clip, ...fields }
-        }),
-      )
-    },
-    onRemoteSync: () => {
-      if (projectId) {
-        void refreshHistory(projectId)
-      }
-    },
-  })
-
-  useEffect(() => {
-    collab.sendPresence(Math.round(currentTime * PROJECT_FPS), selectedId)
-  }, [currentTime, selectedId, collab])
-
-
-  const refreshMedia = useCallback(async (id: string) => {
-    setMediaLoading(true)
+  const refreshMedia = useCallback(async (id: string, opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setMediaLoading(true)
     try {
       const items = await listProjectMedia(id)
       if (projectIdRef.current !== id) return
       const previous = new Map(
         assetsRef.current.filter((asset) => asset.path).map((asset) => [asset.path as string, asset]),
       )
-      const next = items.map((item) => {
+      const next = items.flatMap((item) => {
         const asset = toMediaAsset(item)
-        if (asset.duration > 0 || !asset.path) return asset
+        if (!asset) return []
+        if (asset.duration > 0 || !asset.path) return [asset]
         const known = previous.get(asset.path)
-        return known?.duration ? { ...asset, duration: known.duration } : asset
+        return [known?.duration ? { ...asset, duration: known.duration } : asset]
       })
       setAssets(next)
       setClips((current) => syncClipMedia(current, next))
       return next
     } catch (error) {
-      setToast(errorMessage(error))
+      if (!opts?.silent) setToast(errorMessage(error))
       return undefined
     } finally {
-      setMediaLoading(false)
+      if (!opts?.silent) setMediaLoading(false)
     }
   }, [])
 
@@ -341,7 +327,7 @@ export function Editor() {
     try {
       const saved = await putProjectTimeline(id, doc, { ...opts, expectedRevision: revisionRef.current })
       if (gen !== saveGenRef.current || projectIdRef.current !== id) return
-      revisionRef.current = saved.revision
+      setRevision(saved.revision)
       lastSavedRef.current = fingerprint
       setSaveStatus('saved')
       void refreshHistory(id)
@@ -386,7 +372,7 @@ export function Editor() {
     setCurrentTime(playhead)
     setPxPerSecond(zoom)
     timelineMetaRef.current = { canvas: timeline.canvas ?? { width: 1920, height: 1080 }, transitions: timeline.transitions ?? [] }
-    revisionRef.current = timeline.revision ?? 0
+    setRevision(timeline.revision ?? 0)
     lastSavedRef.current = timelineFingerprint(buildTimelineDocument({
       clips: nextClips,
       fps: PROJECT_FPS,
@@ -406,7 +392,7 @@ export function Editor() {
     setProjectId(id)
     timelineReadyRef.current = false
     lastSavedRef.current = ''
-    revisionRef.current = 0
+    setRevision(0)
     setSaveStatus('idle')
     setClips([])
     setSelectedId(null)
@@ -418,11 +404,12 @@ export function Editor() {
       const previous = new Map(
         assetsRef.current.filter((asset) => asset.path).map((asset) => [asset.path as string, asset]),
       )
-      const next = items.map((item) => {
+      const next = items.flatMap((item) => {
         const asset = toMediaAsset(item)
-        if (asset.duration > 0 || !asset.path) return asset
+        if (!asset) return []
+        if (asset.duration > 0 || !asset.path) return [asset]
         const known = previous.get(asset.path)
-        return known?.duration ? { ...asset, duration: known.duration } : asset
+        return [known?.duration ? { ...asset, duration: known.duration } : asset]
       })
       setAssets(next)
       await loadTimeline(id, next)
@@ -457,6 +444,14 @@ export function Editor() {
       })
     return () => { live = false }
   }, [bootProject, loadChats])
+
+  useEffect(() => {
+    if (!projectId || !assets.some((asset) => indexBusy(asset.indexState))) return
+    const timer = window.setInterval(() => {
+      void refreshMedia(projectId, { silent: true })
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [assets, projectId, refreshMedia])
 
   useEffect(() => {
     let live = true
@@ -504,6 +499,12 @@ export function Editor() {
     const clip = clipsRef.current.find((item) => item.id === id)
     if (!clip) return
     setClips((prev) => removeClips(prev, [id], editModeRef.current, PROJECT_FPS))
+    timelineMetaRef.current = {
+      ...timelineMetaRef.current,
+      transitions: timelineMetaRef.current.transitions.filter((item) => (
+        item.from_item_id !== id && item.to_item_id !== id
+      )),
+    }
     setSelectedId((cur) => (cur === id ? null : cur))
     setToast(`Removed ${clip.name}`)
   }, [])
@@ -650,7 +651,7 @@ export function Editor() {
     const nextClips = clipsFromDocument({ ...emptyTimelineDocument(), ...timeline, clips: timeline.clips ?? [] }, availableAssets)
     setClips(nextClips)
     setSelectedId(null)
-    revisionRef.current = timeline.revision
+    setRevision(timeline.revision)
     timelineMetaRef.current = { canvas: timeline.canvas ?? { width: 1920, height: 1080 }, transitions: timeline.transitions ?? [] }
     lastSavedRef.current = timelineFingerprint(buildTimelineDocument({ clips: nextClips, fps: timeline.fps, revision: timeline.revision, playhead: currentTimeRef.current, selectedId: null, pxPerSecond: pxPerSecondRef.current, canvas: timelineMetaRef.current.canvas, transitions: timelineMetaRef.current.transitions }))
     dirtyRef.current = false
@@ -720,29 +721,6 @@ export function Editor() {
   const selected = clips.find((c) => c.id === selectedId)
   const selectedIds = useMemo(() => new Set(selectedId ? linkedIds(clips, selectedId) : []), [clips, selectedId])
   const canUnlink = selectedIds.size > 1
-
-  const handleAddSearchResult = useCallback(
-    (res: SearchResult) => {
-      const segDuration = Math.max(0.1, res.end_sec - res.start_sec)
-      const asset: MediaAsset = {
-        id: res.file_id,
-        name: `${res.media_path.split('/').pop() || 'Clip'} (${formatClock(res.start_sec)})`,
-        kind: res.kind === 'transcript' ? 'audio' : 'video',
-        duration: segDuration,
-        src: res.content_url,
-        path: res.media_path,
-        thumb: res.thumbnail_url,
-      }
-      const newClips = clipsFromAsset(asset, currentTime)
-      newClips.forEach((c) => {
-        c.sourceIn = res.start_sec
-        c.sourceDuration = segDuration
-      })
-      setClips((prev) => placeClips(prev, newClips, editMode, currentTime))
-      setToast(`Added clip segment (${formatClock(res.start_sec)} – ${formatClock(res.end_sec)})`)
-    },
-    [currentTime, editMode],
-  )
 
   function setToolAndPanel(id: ToolId) {
     if (id === tool && panelOpen) {
@@ -845,10 +823,18 @@ export function Editor() {
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
 
+  function abandonStream() {
+    streamGenRef.current += 1
+    streamQueueRef.current?.reset()
+    streamQueueRef.current = null
+    setPending(false)
+  }
+
   async function openProject(id: string) {
     if (id === projectIdRef.current) return
     await flushTimeline()
     saveGenRef.current += 1
+    abandonStream()
     setDraft('')
     setMessages([])
     setActivity([])
@@ -867,6 +853,7 @@ export function Editor() {
     if (!id || chatID === sessionId) return
     try {
       const detail = await getProjectChat(id, chatID)
+      abandonStream()
       setSessionId(chatID)
       writeActiveChat(id, chatID)
       setMessages(toUiMessages(detail.messages))
@@ -881,6 +868,7 @@ export function Editor() {
     if (!projectId) return
     try {
       const chat = await createProjectChat(projectId)
+      abandonStream()
       setChats((current) => [chat, ...current])
       setSessionId(chat.id)
       writeActiveChat(projectId, chat.id)
@@ -900,6 +888,7 @@ export function Editor() {
       const remaining = chats.filter((chat) => chat.id !== chatID)
       if (remaining.length === 0) {
         const chat = await createProjectChat(projectId)
+        abandonStream()
         setChats([chat])
         setSessionId(chat.id)
         writeActiveChat(projectId, chat.id)
@@ -911,6 +900,7 @@ export function Editor() {
       setChats(remaining)
       if (sessionId === chatID) {
         const next = remaining[0]
+        abandonStream()
         setSessionId(next.id)
         writeActiveChat(projectId, next.id)
         const detail = await getProjectChat(projectId, next.id)
@@ -938,6 +928,54 @@ export function Editor() {
       setToast(errorMessage(error))
     } finally {
       setCreatingProject(false)
+    }
+  }
+
+  function resetWorkspace() {
+    saveGenRef.current += 1
+    projectIdRef.current = ''
+    setProjectId('')
+    timelineReadyRef.current = false
+    lastSavedRef.current = ''
+    setRevision(0)
+    setSaveStatus('idle')
+    setClips([])
+    setSelectedId(null)
+    setCurrentTime(0)
+    setAssets([])
+    setChats([])
+    setSessionId('')
+    setMessages([])
+    setActivity([])
+    setActivityStartedAt(null)
+    setHistory(null)
+    setDraft('')
+    setMediaLoading(false)
+  }
+
+  async function removeProject() {
+    const id = projectId
+    const project = projects.find((item) => item.id === id)
+    if (!id || !project || deletingProject) return
+    if (deleteName.trim() !== project.name) return
+    setDeletingProject(true)
+    saveGenRef.current += 1
+    timelineReadyRef.current = false
+    window.clearTimeout(saveTimerRef.current)
+    try {
+      await deleteProject(id)
+      clearActiveChat(id)
+      const remaining = projects.filter((item) => item.id !== id)
+      setProjects(remaining)
+      setDeleteOpen(false)
+      setDeleteName('')
+      if (remaining[0]) await openProject(remaining[0].id)
+      else resetWorkspace()
+      setToast(`${project.name} deleted`)
+    } catch (error) {
+      setToast(errorMessage(error))
+    } finally {
+      setDeletingProject(false)
     }
   }
 
@@ -976,9 +1014,59 @@ export function Editor() {
     }
   }
 
-  async function send(text: string) {
+  async function retryFrom(index: number) {
+    const list = messagesRef.current
+    const userIndex = list[index]?.role === 'assistant'
+      ? list.findLastIndex((message, i) => i < index && message.role === 'user')
+      : index
+    await regenerateFromUser(userIndex)
+  }
+
+  async function regenerateFromUser(userIndex: number, text?: string) {
+    if (pendingRef.current) {
+      setToast('Wait for Director to finish')
+      return
+    }
+    const list = messagesRef.current
+    const original = list[userIndex]
+    if (!original || original.role !== 'user') {
+      setToast('Nothing to regenerate from that message')
+      return
+    }
+    const nextText = text !== undefined ? text.trim() : original.text
+    if (!nextText && !original.images?.length) {
+      setToast('Message is empty')
+      return
+    }
+    const target = { ...original, text: nextText }
+    const prior = list.slice(0, userIndex)
+    const pathImages = (target.images ?? []).filter((image) => image.path)
+    const dataImages = (target.images ?? []).flatMap((image) => {
+      if (!image.url.startsWith('data:')) return []
+      return [{ name: image.name || 'image', mime: image.mime || 'image/jpeg', data: image.url, preview: image.url }]
+    })
+    const history: HistoryMessage[] = [
+      ...prior.map(toHistoryMessage),
+      ...(pathImages.length || !dataImages.length ? [toHistoryMessage(target)] : []),
+    ]
+    await send(target.text, dataImages.length && !pathImages.length ? dataImages : undefined, {
+      prior,
+      user: target,
+      history,
+    })
+  }
+
+  async function send(
+    text: string,
+    images?: { name: string; mime: string; data: string; preview?: string }[],
+    resume?: { prior: ChatMessage[]; user: ChatMessage; history: HistoryMessage[] },
+  ) {
     const value = text.trim()
-    if (!value || pending) return
+    const attached = (images ?? []).map(({ name, mime, data }) => ({ name, mime, data }))
+    if ((!value && !attached.length && !resume) || pendingRef.current) {
+      if (pendingRef.current) setToast('Wait for Director to finish')
+      return
+    }
     if (!projectId) {
       setToast('Create a project before using Director')
       return
@@ -988,13 +1076,34 @@ export function Editor() {
       setToast('Save the timeline before running Director')
       return
     }
-    const userMsg: ChatMessage = { id: uid(), role: 'user', text: value, time: clock() }
+    const userMsg: ChatMessage = resume?.user ?? {
+      id: uid(),
+      role: 'user',
+      text: value,
+      time: clock(),
+      images: attached.map((image) => ({
+        name: image.name,
+        mime: image.mime,
+        url: image.data,
+      })),
+    }
     const responseID = uid()
     const startedAt = Date.now()
+    const replyTime = clock()
+    abandonStream()
+    const gen = streamGenRef.current
+    const live = () => streamGenRef.current === gen
+    const queue = createStreamTextQueue({
+      onAppend(chunk) {
+        if (!live()) return
+        setMessages((current) => appendStreamText(current, responseID, chunk, replyTime))
+      },
+    })
+    streamQueueRef.current = queue
     setMessages((m) => [
-      ...m,
+      ...(resume ? resume.prior : m),
       userMsg,
-      { id: responseID, role: 'assistant', text: '', time: clock() },
+      { id: responseID, role: 'assistant', text: '', time: replyTime },
     ])
     setActivity([])
     setActivityStartedAt(startedAt)
@@ -1007,16 +1116,18 @@ export function Editor() {
         sessionID: sessionId,
         profileID: settingsRef.current?.active_id,
         message: value,
+        images: attached,
+        messages: resume?.history,
         thinkingEffort,
       }, (event) => {
+        if (!live()) return
         if (event.type === 'session' && typeof event.data.session_id === 'string') {
           setSessionId(event.data.session_id)
           writeActiveChat(projectId, event.data.session_id)
         }
         if (event.type === 'text' && typeof event.data.delta === 'string') {
-          setMessages((current) => current.map((message) =>
-            message.id === responseID ? { ...message, text: message.text + event.data.delta } : message,
-          ))
+          const visible = stripThoughtMarkup(event.data.delta)
+          if (visible) queue.push(visible)
         }
         if (event.type === 'step' && event.data.phase === 'think') {
           const iteration = numberValue(event.data.iteration)
@@ -1031,11 +1142,10 @@ export function Editor() {
               iteration: iteration ?? undefined,
             },
           ])
-          setMessages((current) => current.map((message) =>
-            message.id === responseID && message.text.trim()
-              ? { ...message, text: message.text.trimEnd() + '\n\n' }
-              : message,
-          ))
+          queue.pushBreak()
+        }
+        if (event.type === 'thinking') {
+          setActivity((current) => applyThinkingActivity(current, event.data))
         }
         if (event.type === 'step' && event.data.phase === 'act') {
           const iteration = numberValue(event.data.iteration)
@@ -1060,7 +1170,7 @@ export function Editor() {
               id: `tool-${toolID}`,
               kind: 'tool',
               status: 'active',
-              title: toolLabel(name),
+              title: toolLabel(name, event.data.arguments),
               name,
               arguments: event.data.arguments,
               iteration: numberValue(event.data.iteration) ?? undefined,
@@ -1073,6 +1183,9 @@ export function Editor() {
           const ok = event.data.ok === true
           const elapsedMs = numberValue(event.data.elapsed_ms) ?? undefined
           const error = typeof event.data.error === 'string' ? event.data.error : ''
+          if (ok && event.data.name === 'generate_image') {
+            void refreshMedia(projectId, { silent: true })
+          }
           setActivity((current) => {
             const index = current.findIndex((item) => item.id === `tool-${toolID}`)
             if (index < 0) {
@@ -1082,7 +1195,7 @@ export function Editor() {
                   id: `tool-${toolID || uid()}`,
                   kind: 'tool',
                   status: ok ? 'success' : 'error',
-                  title: typeof event.data.name === 'string' ? toolLabel(event.data.name) : 'Tool call',
+                  title: typeof event.data.name === 'string' ? toolLabel(event.data.name, event.data.arguments) : 'Tool call',
                   detail: error || (ok ? 'Completed.' : 'The tool returned an error.'),
                   elapsedMs,
                 },
@@ -1113,16 +1226,13 @@ export function Editor() {
         }
       })
       if (streamError) throw new Error(streamError)
-      setMessages((current) => current.map((message) =>
-        message.id !== responseID
-          ? message
-          : {
-              ...message,
-              workedMs: Date.now() - startedAt,
-              trace: activityRef.current,
-              ...(!message.text ? { text: 'The operation completed without a written summary.' } : {}),
-            },
-      ))
+      queue.end()
+      await queue.idle()
+      if (!live()) return
+      setMessages((current) => finishStreamMessage(current, responseID, replyTime, {
+        workedMs: Date.now() - startedAt,
+        trace: activityRef.current,
+      }))
       const nextAssets = await refreshMedia(projectId)
       await loadTimeline(projectId, nextAssets ?? assetsRef.current)
       await refreshHistory(projectId)
@@ -1133,11 +1243,15 @@ export function Editor() {
         // keep the in-memory chat list if the refresh fails
       }
     } catch (error) {
-      setMessages((current) => current.map((message) =>
-        message.id === responseID ? { ...message, text: `I couldn't complete that: ${errorMessage(error)}` } : message,
-      ))
+      queue.fail()
+      await queue.idle()
+      if (!live()) return
+      setMessages((current) => finishStreamMessage(current, responseID, replyTime, {
+        text: streamErrorText(current, responseID, errorMessage(error)),
+      }))
+      void refreshMedia(projectId, { silent: true })
     } finally {
-      setPending(false)
+      if (live()) setPending(false)
     }
   }
 
@@ -1167,13 +1281,20 @@ export function Editor() {
         uploading={uploading}
         onProject={(id) => openProject(id)}
         onCreateProject={() => setCreateOpen(true)}
+        onDeleteProject={() => {
+          if (!projectId) {
+            setToast('Create a project before deleting')
+            return
+          }
+          setDeleteName('')
+          setDeleteOpen(true)
+        }}
         onUpload={() => fileInput.current?.click()}
         canUndo={!!history?.can_undo && !pending}
         canRedo={!!history?.redo_candidates?.length && !pending}
         onUndo={() => void undoLast()}
         onRedo={() => void redoLast()}
         exporting={exporting}
-        peers={collab.peers}
         onExport={() => {
           if (!projectId) {
             setToast('Create a project before exporting')
@@ -1209,14 +1330,13 @@ export function Editor() {
                 <MediaPanel
                   width={mediaWidth}
                   tool={tool}
+                  projectId={projectId}
                   assets={assets}
                   loading={mediaLoading}
                   hasProject={!!projectId}
-                  projectId={projectId}
                   onDuration={(id, nextDuration) => applyMediaDuration(id, nextDuration)}
                   onFrame={(id, width, height) => applyMediaFrame(id, width, height)}
                   onAdd={(asset) => addAsset(asset)}
-                  onAddSearchResult={handleAddSearchResult}
                   onDelete={(asset) => void deleteAsset(asset)}
                 />
               )}
@@ -1238,45 +1358,17 @@ export function Editor() {
             isPlaying={isPlaying}
             muted={muted}
             safeArea={safeArea}
-            splitPreview={splitPreview}
             program={program}
             audioClips={audioClips}
             grade={grade}
             duration={duration}
+            projectId={projectId}
+            timelineRevision={revision}
             onTogglePlay={() => setIsPlaying((p) => !p)}
             onSeek={seek}
             onToggleMute={() => setMuted((m) => !m)}
             onToggleSafe={() => setSafeArea((s) => !s)}
           />
-          {selected && (selected.kind === 'audio' || selected.kind === 'video' || selected.mediaType === 'video' || selected.mediaType === 'audio') && (
-            <>
-              <div className="flex items-center justify-end px-3 py-1 bg-well/80 border-t border-line">
-                <div className="flex items-center gap-2">
-                  <button type="button" onClick={() => setSplitPreview((s) => !s)} className="rounded-md bg-lift px-2 py-1 text-[11px] font-medium text-cream hover:bg-wash-strong">{splitPreview ? 'Split: On' : 'Split: Off'}</button>
-                </div>
-                <div className="ml-2 flex items-center gap-2">
-                  <ReframeToolbar selectedClip={selected} onRunAction={(prompt) => void send(prompt)} />
-                  <CaptionToolbar selectedClip={selected} onRunAction={(prompt) => void send(prompt)} />
-                  <AudioToolbar selectedClip={selected} onRunAction={(prompt) => void send(prompt)} />
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 px-3 py-2 bg-well/80 border-t border-line">
-                <div className="text-[11px] text-dim mr-2">Nudge:</div>
-                <div className="flex items-center gap-1">
-                  <button className="rounded px-2 py-1 bg-lift" onClick={() => { if (!selected) return; setClips((prev) => prev.map((c) => c.id === selected.id ? { ...c, transform: { ...(c.transform||{}), x: (c.transform?.x ?? 960) - 10 } } : c)); scheduleSave() }}>◀</button>
-                  <button className="rounded px-2 py-1 bg-lift" onClick={() => { if (!selected) return; setClips((prev) => prev.map((c) => c.id === selected.id ? { ...c, transform: { ...(c.transform||{}), x: (c.transform?.x ?? 960) + 10 } } : c)); scheduleSave() }}>▶</button>
-                  <button className="rounded px-2 py-1 bg-lift" onClick={() => { if (!selected) return; setClips((prev) => prev.map((c) => c.id === selected.id ? { ...c, transform: { ...(c.transform||{}), y: (c.transform?.y ?? 540) - 10 } } : c)); scheduleSave() }}>▲</button>
-                  <button className="rounded px-2 py-1 bg-lift" onClick={() => { if (!selected) return; setClips((prev) => prev.map((c) => c.id === selected.id ? { ...c, transform: { ...(c.transform||{}), y: (c.transform?.y ?? 540) + 10 } } : c)); scheduleSave() }}>▼</button>
-                </div>
-                <div className="ml-4 text-[11px] text-dim">Crop:</div>
-                <div className="flex items-center gap-1">
-                  <button className="rounded px-2 py-1 bg-lift" onClick={() => { if (!selected) return; setClips((prev) => prev.map((c) => c.id === selected.id ? { ...c, transform: { ...(c.transform||{}), cropLeft: (c.transform?.cropLeft ?? 0) - 0.02 } } : c)); scheduleSave() }}>◀ Crop</button>
-                  <button className="rounded px-2 py-1 bg-lift" onClick={() => { if (!selected) return; setClips((prev) => prev.map((c) => c.id === selected.id ? { ...c, transform: { ...(c.transform||{}), cropLeft: (c.transform?.cropLeft ?? 0) + 0.02 } } : c)); scheduleSave() }}>Crop ▶</button>
-                </div>
-              </div>
-            </>
-          )}
           <Timeline
             clips={clips}
             selectedId={selectedId}
@@ -1335,7 +1427,7 @@ export function Editor() {
                 messages={messages}
                 chats={chats}
                 chatId={sessionId}
-                emptyHint={`${projects.find((item) => item.id === projectId)?.name ?? 'This project'} is ready. Upload media, add it to the timeline, or ask me to inspect and transform project files.`}
+                emptyHint={`${projects.find((item) => item.id === projectId)?.name ?? 'This project'} is ready. Upload media, ask me to generate a still, add it to the timeline, or inspect and transform project files.`}
                 draft={draft}
                 pending={pending}
                 activity={activity}
@@ -1343,11 +1435,19 @@ export function Editor() {
                 selected={selected}
                 onDraft={setDraft}
                 onSend={send}
+                onRetry={(index) => void retryFrom(index)}
+                onEdit={(index, text) => void regenerateFromUser(index, text)}
                 onCollapse={() => setChatOpen(false)}
                 onNewChat={() => void newChat()}
                 onSelectChat={(id) => void openChat(projectId, id)}
                 onDeleteChat={(id) => void removeChat(id)}
-                models={settings?.profiles ?? []}
+                models={settings?.profiles?.length ? settings.profiles : settings ? [{
+                  id: settings.active_id || 'default',
+                  label: settings.model,
+                  base_url: settings.base_url,
+                  model: settings.model,
+                  api_key_set: settings.api_key_set,
+                }] : []}
                 modelId={settings?.active_id ?? ''}
                 onModel={(id) => void selectModel(id)}
                 thinkingEffort={thinkingEffort}
@@ -1377,13 +1477,87 @@ export function Editor() {
             playhead={program.video?.clip}
             sequenceDuration={duration}
             hasSequence={clips.length > 0}
+            hasCaptions={clips.some((clip) => clip.kind === 'caption')}
             busy={exporting}
-            clips={clips}
             onClose={() => {
               if (!exporting) setExportOpen(false)
             }}
             onExport={(body) => void runExport(body)}
           />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {deleteOpen && (
+          <motion.div
+            initial={reduce ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={reduce ? undefined : { opacity: 0 }}
+            className="absolute inset-0 z-[70] grid place-items-center bg-black/65 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-project-title"
+            onPointerDown={(event) => {
+              if (event.target === event.currentTarget && !deletingProject) {
+                setDeleteOpen(false)
+                setDeleteName('')
+              }
+            }}
+          >
+            <motion.form
+              initial={reduce ? false : { opacity: 0, y: 10, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={reduce ? undefined : { opacity: 0, y: 8, scale: 0.98 }}
+              onSubmit={(event) => {
+                event.preventDefault()
+                void removeProject()
+              }}
+              className="w-[420px] rounded-xl border border-line bg-panel p-5 shadow-2xl"
+            >
+              <h2 id="delete-project-title" className="text-[16px] font-medium text-cream">Delete this project</h2>
+              <p className="mt-1 text-[12px] leading-relaxed text-mute">
+                This permanently removes{' '}
+                <span className="text-cream">
+                  {projects.find((item) => item.id === projectId)?.name ?? 'this project'}
+                </span>
+                {' '}and everything in it: media, transcripts, embeddings, chats, timeline, and history. This cannot be undone.
+              </p>
+              <label className="mt-5 block text-[10px] tracking-[0.14em] text-dim uppercase">
+                Type the project name to confirm
+                <input
+                  autoFocus
+                  value={deleteName}
+                  onChange={(event) => setDeleteName(event.target.value)}
+                  maxLength={120}
+                  placeholder={projects.find((item) => item.id === projectId)?.name ?? 'Project name'}
+                  className="mt-2 h-10 w-full rounded-lg border border-line bg-well px-3 text-[13px] normal-case tracking-normal text-cream outline-none placeholder:text-dim focus:border-line-strong"
+                />
+              </label>
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={deletingProject}
+                  onClick={() => {
+                    setDeleteOpen(false)
+                    setDeleteName('')
+                  }}
+                  className="h-9 rounded-md px-3 text-[12px] text-mute hover:bg-wash hover:text-cream"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    deletingProject
+                    || deleteName.trim() !== (projects.find((item) => item.id === projectId)?.name ?? '')
+                  }
+                  className="h-9 rounded-md bg-mark px-4 text-[12px] font-medium text-plate disabled:opacity-40"
+                >
+                  {deletingProject ? 'Deleting…' : 'Delete forever'}
+                </button>
+              </div>
+            </motion.form>
+          </motion.div>
         )}
       </AnimatePresence>
 
@@ -1473,9 +1647,18 @@ function numberValue(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
-function toolLabel(name: string) {
+function toolLabel(name: string, args?: unknown) {
+  if (name === 'generate_image' && imageToolHasSource(args)) return 'Editing an image'
   const labels: Record<string, string> = {
     search_web: 'Searching the web',
+    generate_image: 'Generating an image',
+    search_images: 'Searching stills',
+    get_image_caption: 'Reading the still description',
+    search_scenes: 'Searching video shots',
+    get_video_scenes: 'Reading video scenes',
+    search_transcript: 'Searching the transcript',
+    get_transcript: 'Reading the transcript',
+    add_captions: 'Adding captions',
     list_workspace: 'Inspecting workspace files',
     inspect_file: 'Inspecting file metadata',
     probe_media: 'Probing media streams',
@@ -1488,33 +1671,101 @@ function toolLabel(name: string) {
     redo_project_change: 'Staging redo',
     restore_project_revision: 'Restoring project revision',
     create_project_checkpoint: 'Creating project checkpoint',
-    search_footage: 'Searching footage & transcripts',
-    remove_dead_air: 'Cutting dead air & silence',
-    audio_duck: 'Ducking background music',
-    audio_cleanup: 'Cleaning background noise',
-    volume_leveling: 'Normalizing audio loudness',
-    polish_audio: 'Running audio polish suite',
   }
   return labels[name] ?? name.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
 
-function toMediaAsset(item: ProjectMedia): MediaAsset {
+function imageToolHasSource(args: unknown) {
+  let value = args
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value) as unknown
+    } catch {
+      return false
+    }
+  }
+  if (!value || typeof value !== 'object') return false
+  const body = value as Record<string, unknown>
+  if (typeof body.source === 'string' && body.source.trim()) return true
+  if (typeof body.path === 'string' && body.path.trim()) return true
+  if (typeof body.image === 'string' && body.image.trim()) return true
+  if (typeof body.images === 'string' && body.images.trim()) return true
+  return Array.isArray(body.images) && body.images.some((item) => typeof item === 'string' && item.trim())
+}
+
+function toMediaAsset(item: ProjectMedia): MediaAsset | null {
+  if (item.kind === 'subtitle') return null
   const url = mediaURL(item)
-  const kind = item.kind === 'audio' ? 'audio' : item.kind === 'subtitle' ? 'title' : 'video'
+  const kind = item.kind === 'audio' ? 'audio' : 'video'
   const mediaType = item.kind === 'image' ? 'image' : item.kind === 'audio' ? 'audio' : 'video'
   const measured = item.duration && item.duration > 0 ? item.duration : 0
   return {
     id: `project-${item.id}`,
     name: item.name,
     kind,
-    duration: measured || (item.kind === 'image' ? 5 : item.kind === 'subtitle' ? 4 : 0),
+    duration: measured || (item.kind === 'image' ? 5 : 0),
     thumb: item.kind === 'image' ? url : undefined,
     src: url,
     path: item.path,
     mediaType,
     width: item.width && item.width > 0 ? item.width : undefined,
     height: item.height && item.height > 0 ? item.height : undefined,
+    indexState: item.transcript?.state,
+    indexError: item.transcript?.error,
+    indexProgress: item.transcript?.progress,
   }
+}
+
+const INDEX_BUSY: MediaIndexState[] = ['queued', 'transcribing', 'translating', 'describing', 'indexing']
+
+function indexBusy(state?: MediaIndexState) {
+  return Boolean(state && INDEX_BUSY.includes(state))
+}
+
+function toHistoryMessage(message: ChatMessage): HistoryMessage {
+  return {
+    role: message.role,
+    content: message.role === 'assistant' ? stripThoughtMarkup(message.text) : message.text,
+    images: (message.images ?? []).flatMap((image) => {
+      if (!image.path) return []
+      return [{ name: image.name, mime: image.mime, path: image.path }]
+    }),
+  }
+}
+
+function appendStreamText(messages: ChatMessage[], id: string, chunk: string, time: string): ChatMessage[] {
+  const index = messages.findIndex((message) => message.id === id)
+  if (index < 0) {
+    return [...messages, { id, role: 'assistant', text: chunk, time }]
+  }
+  const next = [...messages]
+  next[index] = { ...next[index], text: next[index].text + chunk }
+  return next
+}
+
+function finishStreamMessage(
+  messages: ChatMessage[],
+  id: string,
+  time: string,
+  patch: Partial<ChatMessage>,
+): ChatMessage[] {
+  const index = messages.findIndex((message) => message.id === id)
+  const fallback = patch.text ?? (index < 0 || !messages[index].text
+    ? 'The operation completed without a written summary.'
+    : undefined)
+  const nextPatch = fallback != null ? { ...patch, text: fallback } : patch
+  if (index < 0) {
+    return [...messages, { id, role: 'assistant', text: nextPatch.text ?? '', time, ...nextPatch }]
+  }
+  const next = [...messages]
+  next[index] = { ...next[index], ...nextPatch }
+  return next
+}
+
+function streamErrorText(messages: ChatMessage[], id: string, detail: string) {
+  const existing = messages.find((message) => message.id === id)?.text.trim()
+  const note = `I couldn't complete that: ${detail}`
+  return existing ? `${existing}\n\n${note}` : note
 }
 
 function toUiMessages(messages: SavedChatMessage[]): ChatMessage[] {
@@ -1532,15 +1783,46 @@ function toUiMessages(messages: SavedChatMessage[]): ChatMessage[] {
     }
   }
   return visible
-    .filter((message) => message.content.trim())
+    .filter((message) => message.content.trim() || (message.images && message.images.length > 0))
     .map((message) => ({
       id: uid(),
       role: message.role,
       text: message.content,
       time: '',
+      images: (message.images ?? []).flatMap((image) => {
+        const url = image.url ? API_BASE + image.url : ''
+        return url ? [{ name: image.name, mime: image.mime, path: image.path, url }] : []
+      }),
       workedMs: message.worked_ms,
       trace: activityFromTrace(message.trace_events),
     }))
+}
+
+function applyThinkingActivity(items: DirectorActivity[], data: Record<string, unknown>): DirectorActivity[] {
+  const iteration = numberValue(data.iteration)
+  const delta = typeof data.delta === 'string' ? data.delta : ''
+  const text = typeof data.text === 'string' ? data.text : ''
+  if (!delta && !text) return items
+  const id = `think-${iteration ?? items.length}`
+  const index = items.findIndex((item) => item.id === id || (item.kind === 'thinking' && item.iteration === iteration && iteration != null))
+  const previous = index >= 0 ? items[index].detail ?? '' : ''
+  const detail = stripThoughtMarkup(text || `${placeholderThought(previous) ? '' : previous}${delta}`)
+  const next: DirectorActivity = {
+    id: index >= 0 ? items[index].id : id,
+    kind: 'thinking',
+    status: index >= 0 ? items[index].status : 'active',
+    title: 'Thinking',
+    detail,
+    iteration: iteration ?? items[index]?.iteration,
+  }
+  if (index < 0) return [...items, next]
+  const copy = [...items]
+  copy[index] = { ...items[index], ...next }
+  return copy
+}
+
+function placeholderThought(value: string) {
+  return !value.trim() || /^Director (is deciding|decided|is applying)/.test(value)
 }
 
 function activityFromTrace(events?: AgentEvent[]): DirectorActivity[] {
@@ -1565,12 +1847,18 @@ function activityFromTrace(events?: AgentEvent[]): DirectorActivity[] {
       })
       continue
     }
+    if (event.type === 'thinking') {
+      const next = applyThinkingActivity(items, data)
+      items.length = 0
+      items.push(...next)
+      continue
+    }
     if (event.type === 'tool_call' && typeof data.name === 'string') {
       items.push({
         id: `tool-${typeof data.id === 'string' ? data.id : items.length}`,
         kind: 'tool',
         status: 'success',
-        title: toolLabel(data.name),
+        title: toolLabel(data.name, data.arguments),
         name: data.name,
         arguments: data.arguments,
         iteration: numberValue(data.iteration) ?? undefined,
@@ -1592,7 +1880,7 @@ function activityFromTrace(events?: AgentEvent[]): DirectorActivity[] {
           id: id || `tool-${items.length}`,
           kind: 'tool',
           status: ok ? 'success' : 'error',
-          title: typeof data.name === 'string' ? toolLabel(data.name) : 'Tool call',
+          title: typeof data.name === 'string' ? toolLabel(data.name, data.arguments) : 'Tool call',
           detail,
           elapsedMs,
         })
@@ -1644,6 +1932,14 @@ function readActiveChat(projectID: string) {
 
 function writeActiveChat(projectID: string, chatID: string) {
   writePref(activeChatKey(projectID), chatID)
+}
+
+function clearActiveChat(projectID: string) {
+  try {
+    localStorage.removeItem(activeChatKey(projectID))
+  } catch {
+    // ignore quota / private mode
+  }
 }
 
 function readPref(key: string, fallback = '') {

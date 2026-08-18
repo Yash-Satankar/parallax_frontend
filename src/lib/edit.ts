@@ -11,12 +11,14 @@ export type EditMode = 'overwrite' | 'ripple'
 const TRACK_FOR: Record<TrackKind, string> = {
   video: 'V1',
   title: 'V2',
+  caption: 'C1',
   audio: 'A1',
 }
 
 const COLOR_FOR: Record<TrackKind, string> = {
   video: '#8a6a48',
   title: '#c4a36a',
+  caption: '#5b7c99',
   audio: '#3d8f72',
 }
 
@@ -40,6 +42,7 @@ export function defaultTrack(kind: TrackKind) {
 export function trackAccepts(trackId: string, kind: TrackKind) {
   if (kind === 'video') return trackId === 'V1'
   if (kind === 'title') return trackId === 'V2'
+  if (kind === 'caption') return trackId === 'C1'
   return trackId === 'A1' || trackId === 'A2'
 }
 

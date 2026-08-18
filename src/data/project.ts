@@ -7,6 +7,7 @@ export const PROJECT_RES = '3840 × 2160'
 
 export const tracks: Track[] = [
   { id: 'V2', label: 'V2', kind: 'title' },
+  { id: 'C1', label: 'C1', kind: 'caption' },
   { id: 'V1', label: 'V1', kind: 'video' },
   { id: 'A1', label: 'A1', kind: 'audio' },
   { id: 'A2', label: 'A2', kind: 'audio' },

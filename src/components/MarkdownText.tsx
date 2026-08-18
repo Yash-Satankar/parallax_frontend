@@ -7,15 +7,16 @@ type Block =
   | { type: 'table'; headers: string[]; rows: string[][] }
   | { type: 'rule' }
 
-export function MarkdownText({ children }: { children: string }) {
+export function MarkdownText({ children, fadeTail = 0 }: { children: string; fadeTail?: number }) {
   const blocks = parseBlocks(children)
   return (
     <div className="space-y-2.5">
       {blocks.map((block, index) => {
+        const fade = index === blocks.length - 1 ? fadeTail : 0
         if (block.type === 'heading') {
           return (
             <div key={index} className="pt-1 text-[12px] font-semibold tracking-wide text-cream">
-              {inline(block.text)}
+              {inline(block.text, fade)}
             </div>
           )
         }
@@ -26,7 +27,9 @@ export function MarkdownText({ children }: { children: string }) {
               key={index}
               className={block.ordered ? 'list-decimal space-y-1 pl-5' : 'list-disc space-y-1 pl-5'}
             >
-              {block.items.map((item, itemIndex) => <li key={itemIndex}>{inline(item)}</li>)}
+              {block.items.map((item, itemIndex) => (
+                <li key={itemIndex}>{inline(item, itemIndex === block.items.length - 1 ? fade : 0)}</li>
+              ))}
             </Tag>
           )
         }
@@ -61,7 +64,7 @@ export function MarkdownText({ children }: { children: string }) {
         if (block.type === 'rule') {
           return <hr key={index} className="border-0 border-t border-line-strong" />
         }
-        return <p key={index}>{inline(block.text)}</p>
+        return <p key={index}>{inline(block.text, fade)}</p>
       })}
     </div>
   )
@@ -153,7 +156,25 @@ function isHorizontalRule(line: string) {
   return /^([-*_])(?:\s*\1){2,}\s*$/.test(line)
 }
 
-function inline(text: string): ReactNode[] {
+function inline(text: string, fadeTail = 0): ReactNode[] {
+  if (fadeTail > 0) return fadeInline(text, fadeTail)
+  return parseInline(text)
+}
+
+function fadeInline(text: string, fadeTail: number): ReactNode[] {
+  const split = Math.max(0, text.length - fadeTail)
+  const head = text.slice(0, split)
+  const tail = text.slice(split)
+  if (!tail || /[`*[]/.test(tail)) return parseInline(text)
+  return [
+    ...parseInline(head),
+    ...[...tail].map((ch, index) => (
+      <span key={`fade-${split + index}`} className="stream-glyph">{ch}</span>
+    )),
+  ]
+}
+
+function parseInline(text: string): ReactNode[] {
   const tokenPattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\[([^\]\n]+)\]\s*\(((?:https?:\/\/|mailto:)[^)\s]+)\)|((?:https?:\/\/|www\.)[^\s<]+))/g
   const nodes: ReactNode[] = []
   let lastIndex = 0

@@ -10,6 +10,28 @@ export type ProjectRecord = {
   media_count: number
 }
 
+export type TranscriptIndexState =
+  | 'queued'
+  | 'transcribing'
+  | 'translating'
+  | 'describing'
+  | 'indexing'
+  | 'ready'
+  | 'index_failed'
+  | 'failed'
+  | 'skipped'
+
+export type TranscriptIndexStatus = {
+  path: string
+  state: TranscriptIndexState
+  hash?: string
+  error?: string
+  progress?: string
+  at?: number
+  duration?: number
+  updated_at: string
+}
+
 export type ProjectMedia = {
   id: string
   name: string
@@ -22,6 +44,7 @@ export type ProjectMedia = {
   width?: number
   height?: number
   modified_at: string
+  transcript?: TranscriptIndexStatus
 }
 
 export type ChatRecord = {
@@ -31,9 +54,17 @@ export type ChatRecord = {
   updated_at: string
 }
 
+export type ChatImageRecord = {
+  name?: string
+  mime?: string
+  path?: string
+  url?: string
+}
+
 export type SavedChatMessage = {
   role: 'user' | 'assistant'
   content: string
+  images?: ChatImageRecord[]
   worked_ms?: number
   trace_events?: AgentEvent[]
 }
@@ -78,7 +109,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function listProjects() {
   const result = await request<{ projects: ProjectRecord[] }>('/v1/projects')
-  return result.projects
+  return result.projects ?? []
 }
 
 export function createProject(name: string) {
@@ -89,9 +120,38 @@ export function createProject(name: string) {
   })
 }
 
+export async function deleteProject(projectID: string) {
+  const response = await fetch(`${API_BASE}/v1/projects/${projectID}`, { method: 'DELETE' })
+  if (!response.ok && response.status !== 204) {
+    const body = await response.json().catch(() => ({})) as { error?: string }
+    throw new Error(body.error || `Request failed (${response.status})`)
+  }
+}
+
+export type MediaSearchHit = {
+  path?: string
+  name?: string
+  kind?: string
+  score?: number
+  text_en?: string
+  spoken_en?: string
+  start?: number
+  end?: number
+  scene_id?: string
+}
+
+export async function searchProjectMedia(projectID: string, query: string, limit = 24) {
+  const q = query.trim()
+  if (!q) return [] as MediaSearchHit[]
+  const result = await request<{ results?: MediaSearchHit[] }>(
+    `/v1/projects/${projectID}/media/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+  )
+  return result.results ?? []
+}
+
 export async function listProjectMedia(projectID: string) {
   const result = await request<{ media: ProjectMedia[] }>(`/v1/projects/${projectID}/media`)
-  return result.media
+  return result.media ?? []
 }
 
 export async function uploadProjectMedia(projectID: string, files: File[]) {
@@ -111,6 +171,7 @@ export function mediaURL(item: ProjectMedia) {
 export type ExportFormat = 'mp4' | 'mov' | 'webm' | 'gif' | 'mp3'
 export type ExportQuality = 'draft' | 'standard' | 'high' | 'original'
 export type ExportResolution = 'source' | '3840x2160' | '1920x1080' | '1280x720' | '854x480'
+export type ExportCaptions = 'soft' | 'burn' | 'none'
 
 export type ExportRequest = {
   source: string
@@ -122,6 +183,7 @@ export type ExportRequest = {
   start?: number
   duration?: number
   filename: string
+  captions?: ExportCaptions
 }
 
 export type ExportResult = {
@@ -165,7 +227,7 @@ export async function deleteProjectMedia(projectID: string, path: string) {
 
 export async function listProjectChats(projectID: string) {
   const result = await request<{ chats: ChatRecord[] }>(`/v1/projects/${projectID}/chats`)
-  return result.chats
+  return result.chats ?? []
 }
 
 export function createProjectChat(projectID: string, title = '') {
@@ -177,7 +239,8 @@ export function createProjectChat(projectID: string, title = '') {
 }
 
 export async function getProjectChat(projectID: string, chatID: string) {
-  return request<ChatRecord & { messages: SavedChatMessage[] }>(`/v1/projects/${projectID}/chats/${chatID}`)
+  const chat = await request<ChatRecord & { messages?: SavedChatMessage[] }>(`/v1/projects/${projectID}/chats/${chatID}`)
+  return { ...chat, messages: chat.messages ?? [] }
 }
 
 export function renameProjectChat(projectID: string, chatID: string, title: string) {
@@ -298,12 +361,20 @@ export function profileLabel(profile: Pick<LLMProfile, 'label' | 'model' | 'base
   }
 }
 
+export type HistoryMessage = {
+  role: 'user' | 'assistant'
+  content: string
+  images?: { name?: string; mime?: string; path?: string }[]
+}
+
 export async function streamAgent(
   input: {
     projectID: string
     sessionID?: string
     profileID?: string
     message: string
+    images?: { name: string; mime: string; data: string }[]
+    messages?: HistoryMessage[]
     thinkingEffort?: ThinkingEffort
   },
   onEvent: (event: AgentEvent) => void,
@@ -316,6 +387,8 @@ export async function streamAgent(
       session_id: input.sessionID || undefined,
       profile_id: input.profileID || undefined,
       message: input.message,
+      images: input.images?.length ? input.images : undefined,
+      messages: input.messages?.length ? input.messages : undefined,
       thinking_effort: input.thinkingEffort || DEFAULT_THINKING_EFFORT,
     }),
   })

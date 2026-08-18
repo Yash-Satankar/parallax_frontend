@@ -1,11 +1,8 @@
 export type ToolId = 'media' | 'titles' | 'audio' | 'effects' | 'transitions' | 'history'
 
-/** Rendering capability of the current browser for the preview stage. */
-export type GPUCapability = 'webgpu' | 'canvas2d' | 'unknown'
+export type TrackKind = 'video' | 'audio' | 'title' | 'caption'
 
-export type TrackKind = 'video' | 'audio' | 'title'
-
-export type MediaKind = 'video' | 'audio' | 'title'
+export type MediaKind = 'video' | 'audio' | 'title' | 'caption'
 
 export type Clip = {
   id: string
@@ -20,7 +17,7 @@ export type Clip = {
   thumb?: string
   src?: string
   mediaPath?: string
-  mediaType?: 'video' | 'audio' | 'image'
+  mediaType?: 'video' | 'audio' | 'image' | 'subtitle'
   width?: number
   height?: number
   color: string
@@ -31,7 +28,8 @@ export type Clip = {
   playback?: TimelinePlayback
   audio?: TimelineAudio
   grade?: TimelineColor
-  title?: TimelineTitleExtended
+  title?: TimelineTitle
+  captions?: TimelineCaptions
   keyframes?: TimelineKeyframe[]
 }
 
@@ -44,11 +42,9 @@ export type TimelinePlayback = { rate?: number; preservePitch?: boolean }
 export type TimelineAudio = { volumeDb?: number; muted?: boolean; pan?: number }
 export type TimelineColor = { exposure?: number; contrast?: number; saturation?: number; temperature?: number; tint?: number }
 export type TimelineTitle = { text: string; fontFamily?: string; fontSize?: number; fontWeight?: number; align?: string; fill?: string; stroke?: string; strokeWidth?: number; background?: string }
+export type TimelineCaptions = { language?: string; source?: string }
+export type CaptionCue = { start: number; end: number; text: string }
 export type TimelineKeyframe = { property: string; frame: number; value: number; easing?: 'linear' | 'ease_in' | 'ease_out' | 'ease_in_out' }
-
-export type TimelineCaptionWord = { word: string; startSec: number; endSec: number; startFrame?: number; durationFrames?: number }
-
-export type TimelineTitleExtended = TimelineTitle & { stylePreset?: string; highlightColor?: string; activeScale?: number; words?: TimelineCaptionWord[] }
 
 export type Track = {
   id: string
@@ -57,6 +53,17 @@ export type Track = {
   locked?: boolean
   muted?: boolean
 }
+
+export type MediaIndexState =
+  | 'queued'
+  | 'transcribing'
+  | 'translating'
+  | 'describing'
+  | 'indexing'
+  | 'ready'
+  | 'index_failed'
+  | 'failed'
+  | 'skipped'
 
 export type MediaAsset = {
   id: string
@@ -69,15 +76,26 @@ export type MediaAsset = {
   mediaType?: 'video' | 'audio' | 'image'
   width?: number
   height?: number
+  indexState?: MediaIndexState
+  indexError?: string
+  indexProgress?: string
 }
 
 export type ChatRole = 'user' | 'assistant'
+
+export type ChatImage = {
+  name?: string
+  mime?: string
+  path?: string
+  url: string
+}
 
 export type ChatMessage = {
   id: string
   role: ChatRole
   text: string
   time: string
+  images?: ChatImage[]
   workedMs?: number
   trace?: DirectorActivity[]
 }
@@ -98,16 +116,4 @@ export type Grade = {
   warmth: number
   contrast: number
   saturation: number
-}
-
-export type SearchResult = {
-  file_id: string
-  media_path: string
-  content_url: string
-  thumbnail_url?: string
-  start_sec: number
-  end_sec: number
-  kind: 'frame' | 'transcript'
-  text: string
-  relevance_score: number
 }

@@ -12,6 +12,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { AnimatePresence, motion, useMotionValue, useReducedMotion, useSpring, useTransform } from 'framer-motion'
 import type { Clip, Grade } from '../types'
 import { PROJECT_FPS, clipsAtTime } from '../data/project'
+import { captionFontPx, cueAt, DEFAULT_CAPTION_FONT, useCaptionCues } from '../lib/captions'
 import { DEFAULT_FRAME, fitContain, resolutionLabel } from '../lib/frame'
 import { programLabel, type ProgramFrame } from '../lib/program'
 import { formatRange, formatTimecode } from '../lib/time'
@@ -33,6 +34,8 @@ type Props = {
   audioClips?: Clip[]
   grade: Grade
   duration: number
+  projectId?: string
+  timelineRevision?: number
   onTogglePlay: () => void
   onSeek: (time: number) => void
   onToggleMute: () => void
@@ -49,6 +52,8 @@ export function PreviewStage({
   audioClips = [],
   grade,
   duration,
+  projectId = '',
+  timelineRevision = 0,
   onTogglePlay,
   onSeek,
   onToggleMute,
@@ -100,8 +105,13 @@ export function PreviewStage({
   const frameLabel = resolutionLabel(frame.width, frame.height)
   const liveAudio = useMemo(() => clipsAtTime(audioClips, currentTime), [audioClips, currentTime])
   const liveAudioIds = useMemo(() => new Set(liveAudio.map((item) => item.id)), [liveAudio])
-  const mixFromTracks = audioClips.some((item) => item.src)
-  const videoMuted = muted || mixFromTracks
+  const captionClip = program.captions?.clip
+  const captionCues = useCaptionCues(projectId, captionClip?.mediaPath, timelineRevision)
+  const captionText = useMemo(() => {
+    if (!captionClip) return ''
+    const sourceTime = program.captions?.sourceTime ?? 0
+    return cueAt(captionCues, sourceTime)?.text ?? ''
+  }, [captionClip, captionCues, program.captions?.sourceTime])
 
   useLayoutEffect(() => {
     const el = wellRef.current
@@ -190,6 +200,7 @@ export function PreviewStage({
               <ProgramAudio
                 key={audio.id}
                 src={audio.src}
+                mediaType={audio.mediaType}
                 start={audio.start}
                 sourceIn={audio.sourceIn ?? 0}
                 currentTime={currentTime}
@@ -234,7 +245,7 @@ export function PreviewStage({
                 sourceIn={program.video.clip.sourceIn ?? 0}
                 currentTime={currentTime}
                 isPlaying={isPlaying}
-                muted={videoMuted}
+                muted
                 filter={pictureFilter}
                 visualStyle={pictureStyle}
                 rate={program.video.clip.playback?.rate ?? 1}
@@ -297,6 +308,17 @@ export function PreviewStage({
                 </motion.div>
               )}
           </AnimatePresence>
+
+          {captionText && captionClip ? (
+            <div
+              className="pointer-events-none absolute z-20 max-w-[86%] text-center"
+              style={captionVisualStyle(captionClip, currentTime, fitted.height)}
+            >
+              <span className="inline-block max-w-full whitespace-pre-wrap rounded-[3px] px-[0.45em] py-[0.12em] leading-snug [text-shadow:0_1px_1px_#000,0_0_6px_#000]">
+                {captionText}
+              </span>
+            </div>
+          ) : null}
 
           <div className="pointer-events-none absolute top-3 left-3 z-10 flex items-center gap-2">
             <motion.span
@@ -566,6 +588,31 @@ function clipFilter(clip: Clip, base: string) {
   return [base, `brightness(${Math.pow(2, grade.exposure ?? 0)})`, `contrast(${1 + (grade.contrast ?? 0)})`, `saturate(${1 + (grade.saturation ?? 0)})`, `sepia(${Math.max(0, grade.temperature ?? 0) * .25})`, `hue-rotate(${(grade.tint ?? 0) * 20}deg)`].join(' ')
 }
 
+function captionVisualStyle(clip: Clip, time: number, plateHeight: number): CSSProperties {
+  const transform = clip.transform
+  const x = propertyAt(clip, 'transform.x', time, transform?.x ?? 960)
+  const y = propertyAt(clip, 'transform.y', time, transform?.y ?? 1000)
+  const scaleX = propertyAt(clip, 'transform.scale_x', time, transform?.scaleX ?? 1)
+  const scaleY = propertyAt(clip, 'transform.scale_y', time, transform?.scaleY ?? 1)
+  const opacity = propertyAt(clip, 'transform.opacity', time, transform?.opacity ?? 1)
+  const fontSize = propertyAt(clip, 'title.font_size', time, clip.title?.fontSize ?? DEFAULT_CAPTION_FONT)
+  const ax = transform?.anchorX ?? 0.5
+  const ay = transform?.anchorY ?? 1
+  return {
+    left: `${x / 19.2}%`,
+    top: `${y / 10.8}%`,
+    transform: `translate(${-ax * 100}%, ${-ay * 100}%)`,
+    opacity,
+    fontSize: `${captionFontPx(fontSize, (scaleX + scaleY) / 2, plateHeight)}px`,
+    fontWeight: clip.title?.fontWeight ?? 600,
+    color: clip.title?.fill ?? '#fff',
+    background: clip.title?.background ?? 'rgba(0,0,0,0.55)',
+    WebkitTextStroke: clip.title?.stroke ? `${clip.title.strokeWidth ?? 1}px ${clip.title.stroke}` : undefined,
+    fontFamily: clip.title?.fontFamily || `'Noto Sans Devanagari', 'Noto Sans', system-ui, sans-serif`,
+    textAlign: (clip.title?.align as CSSProperties['textAlign']) ?? 'center',
+  }
+}
+
 function titleVisualStyle(clip: Clip, time: number): CSSProperties {
   const transform = clip.transform
   const x = propertyAt(clip, 'transform.x', time, transform?.x ?? 960)
@@ -604,6 +651,7 @@ function renderTitleOverlay(clip: Clip, time: number) {
 
 function ProgramAudio({
   src,
+  mediaType,
   start,
   sourceIn,
   currentTime,
@@ -615,6 +663,7 @@ function ProgramAudio({
   clipMuted,
 }: {
   src: string
+  mediaType?: Clip['mediaType']
   start: number
   sourceIn: number
   currentTime: number
@@ -625,7 +674,7 @@ function ProgramAudio({
   volumeDb: number
   clipMuted: boolean
 }) {
-  const audioRef = useRef<HTMLAudioElement>(null)
+  const mediaRef = useRef<HTMLVideoElement>(null)
   const startRef = useRef(start)
   const sourceInRef = useRef(sourceIn)
   const currentTimeRef = useRef(currentTime)
@@ -638,14 +687,14 @@ function ProgramAudio({
   activeRef.current = active
 
   useEffect(() => {
-    const audio = audioRef.current
-    if (!audio) return
+    const media = mediaRef.current
+    if (!media) return
     let cancelled = false
 
     const onReady = () => {
       if (cancelled) return
       syncMediaClock(
-        audio,
+        media,
         startRef.current,
         sourceInRef.current,
         currentTimeRef.current,
@@ -655,35 +704,37 @@ function ProgramAudio({
       )
     }
 
-    audio.addEventListener('loadedmetadata', onReady)
-    audio.addEventListener('canplay', onReady)
-    if (audio.readyState >= HTMLMediaElement.HAVE_METADATA) onReady()
+    media.addEventListener('loadedmetadata', onReady)
+    media.addEventListener('canplay', onReady)
+    if (media.readyState >= HTMLMediaElement.HAVE_METADATA) onReady()
 
     return () => {
       cancelled = true
-      audio.removeEventListener('loadedmetadata', onReady)
-      audio.removeEventListener('canplay', onReady)
+      media.removeEventListener('loadedmetadata', onReady)
+      media.removeEventListener('canplay', onReady)
     }
-  }, [src, rate])
+  }, [src, rate, mediaType])
 
   useEffect(() => {
-    const audio = audioRef.current
-    if (!audio) return
-    audio.volume = clipMuted ? 0 : Math.min(1, Math.max(0, Math.pow(10, volumeDb / 20)))
+    const media = mediaRef.current
+    if (!media) return
+    media.volume = clipMuted ? 0 : Math.min(1, Math.max(0, Math.pow(10, volumeDb / 20)))
   }, [clipMuted, volumeDb])
 
   useEffect(() => {
-    const audio = audioRef.current
-    if (!audio) return
-    syncMediaClock(audio, start, sourceIn, currentTime, isPlaying, active, rate)
+    const media = mediaRef.current
+    if (!media) return
+    syncMediaClock(media, start, sourceIn, currentTime, isPlaying, active, rate)
   }, [currentTime, isPlaying, start, sourceIn, active, rate])
 
   return (
-    <audio
-      ref={audioRef}
+    <video
+      ref={mediaRef}
       src={src}
       muted={muted}
+      playsInline
       preload="auto"
+      className="hidden"
     />
   )
 }

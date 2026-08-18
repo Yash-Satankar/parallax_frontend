@@ -14,7 +14,7 @@ export type TimelineClipRecord = {
   source_in_frame: number
   source_duration_frames?: number
   media_path?: string
-  media_type?: 'video' | 'audio' | 'image'
+  media_type?: 'video' | 'audio' | 'image' | 'subtitle'
   color: string
   wave_seed?: number
   link_id?: string
@@ -24,6 +24,7 @@ export type TimelineClipRecord = {
   audio?: { volume_db?: number; muted?: boolean; pan?: number }
   grade?: TimelineColor
   title?: { text: string; font_family?: string; font_size?: number; font_weight?: number; align?: string; fill?: string; stroke?: string; stroke_width?: number; background?: string }
+  captions?: { language?: string; source?: string }
   keyframes?: TimelineKeyframe[]
 }
 
@@ -46,6 +47,7 @@ export type TimelineDocument = {
 const COLOR_FOR: Record<TrackKind, string> = {
   video: '#8a6a48',
   title: '#c4a36a',
+  caption: '#5b7c99',
   audio: '#3d8f72',
 }
 
@@ -205,22 +207,7 @@ function clipToRecord(clip: Clip, fps: number): TimelineClipRecord {
   if (clip.audio) record.audio = { volume_db: clip.audio.volumeDb, muted: clip.audio.muted, pan: clip.audio.pan }
   if (clip.grade) record.grade = clip.grade
   if (clip.title) record.title = { text: clip.title.text, font_family: clip.title.fontFamily, font_size: clip.title.fontSize, font_weight: clip.title.fontWeight, align: clip.title.align, fill: clip.title.fill, stroke: clip.title.stroke, stroke_width: clip.title.strokeWidth, background: clip.title.background }
-  if (clip.title?.words?.length) {
-    // Map caption words into snake_case record form
-    // Each word's startSec is expected to be absolute timeline seconds
-    // duration is derived from endSec - startSec
-    // fps passed in to convert to frames
-    // @ts-ignore - extend record.title with words
-    record.title = record.title || { text: clip.title.text, font_family: clip.title.fontFamily, font_size: clip.title.fontSize, font_weight: clip.title.fontWeight, align: clip.title.align, fill: clip.title.fill, stroke: clip.title.stroke, stroke_width: clip.title.strokeWidth, background: clip.title.background }
-    // @ts-ignore
-    record.title.words = clip.title.words.map((w) => ({
-      word: w.word,
-      start_sec: w.startSec,
-      end_sec: w.endSec,
-      start_frame: toFrames(w.startSec, fps),
-      duration_frames: toFrames(Math.max(0, w.endSec - w.startSec), fps),
-    }))
-  }
+  if (clip.captions) record.captions = { language: clip.captions.language, source: clip.captions.source }
   if (clip.keyframes?.length) record.keyframes = clip.keyframes
   return record
 }
@@ -247,25 +234,8 @@ function clipFromRecord(record: TimelineClipRecord, fps: number): Clip {
     playback: record.playback ? { rate: record.playback.rate, preservePitch: record.playback.preserve_pitch } : undefined,
     audio: record.audio ? { volumeDb: record.audio.volume_db, muted: record.audio.muted, pan: record.audio.pan } : undefined,
     grade: record.grade,
-    // build title object explicitly to satisfy typing
-    title: (function(){
-      if (!record.title) return undefined
-      const t: any = {
-        text: record.title.text || '',
-        fontFamily: record.title.font_family,
-        fontSize: record.title.font_size,
-        fontWeight: record.title.font_weight,
-        align: record.title.align,
-        fill: record.title.fill,
-        stroke: record.title.stroke,
-        strokeWidth: record.title.stroke_width,
-        background: record.title.background,
-      }
-      if (Array.isArray((record.title as any).words)) {
-        t.words = (record.title as any).words.map((w: any) => ({ word: w.word, startSec: fromFrames(w.start_frame, fps), endSec: fromFrames((w.start_frame ?? 0) + (w.duration_frames ?? 0), fps), startFrame: w.start_frame, durationFrames: w.duration_frames }))
-      }
-      return t
-    })(),
+    title: record.title ? { text: record.title.text, fontFamily: record.title.font_family, fontSize: record.title.font_size, fontWeight: record.title.font_weight, align: record.title.align, fill: record.title.fill, stroke: record.title.stroke, strokeWidth: record.title.stroke_width, background: record.title.background } : undefined,
+    captions: record.captions ? { language: record.captions.language, source: record.captions.source } : undefined,
     keyframes: record.keyframes,
   }
 }
