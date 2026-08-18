@@ -76,6 +76,8 @@ import { ChatPanel, ChatRail } from './ChatPanel'
 import { ExportDialog } from './ExportDialog'
 import { HistoryPanel } from './HistoryPanel'
 import { AudioToolbar } from './AudioToolbar'
+import { CaptionToolbar } from './CaptionToolbar'
+import { ReframeToolbar } from './ReframeToolbar'
 import { fade, panelTransition } from '../lib/motion'
 import { cn } from '../lib/cn'
 import { useCollab } from '../lib/useCollab'
@@ -84,6 +86,7 @@ export function Editor() {
   const reduce = useReducedMotion()
   const [tool, setTool] = useState<ToolId>('media')
   const [panelOpen, setPanelOpen] = useState(true)
+  const [splitPreview, setSplitPreview] = useState(false)
   const [chatOpen, setChatOpen] = useState(true)
   const [mediaWidth, setMediaWidth] = useState(() => readNumberPref('parallax.mediaWidth', 268, 220, 420))
   const [chatWidth, setChatWidth] = useState(() => readNumberPref('parallax.chatWidth', 360, 300, 520))
@@ -1235,6 +1238,7 @@ export function Editor() {
             isPlaying={isPlaying}
             muted={muted}
             safeArea={safeArea}
+            splitPreview={splitPreview}
             program={program}
             audioClips={audioClips}
             grade={grade}
@@ -1245,9 +1249,33 @@ export function Editor() {
             onToggleSafe={() => setSafeArea((s) => !s)}
           />
           {selected && (selected.kind === 'audio' || selected.kind === 'video' || selected.mediaType === 'video' || selected.mediaType === 'audio') && (
-            <div className="flex items-center justify-end px-3 py-1 bg-well/80 border-t border-line">
-              <AudioToolbar selectedClip={selected} onRunAction={(prompt) => void send(prompt)} />
-            </div>
+            <>
+              <div className="flex items-center justify-end px-3 py-1 bg-well/80 border-t border-line">
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => setSplitPreview((s) => !s)} className="rounded-md bg-lift px-2 py-1 text-[11px] font-medium text-cream hover:bg-wash-strong">{splitPreview ? 'Split: On' : 'Split: Off'}</button>
+                </div>
+                <div className="ml-2 flex items-center gap-2">
+                  <ReframeToolbar selectedClip={selected} onRunAction={(prompt) => void send(prompt)} />
+                  <CaptionToolbar selectedClip={selected} onRunAction={(prompt) => void send(prompt)} />
+                  <AudioToolbar selectedClip={selected} onRunAction={(prompt) => void send(prompt)} />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 px-3 py-2 bg-well/80 border-t border-line">
+                <div className="text-[11px] text-dim mr-2">Nudge:</div>
+                <div className="flex items-center gap-1">
+                  <button className="rounded px-2 py-1 bg-lift" onClick={() => { if (!selected) return; setClips((prev) => prev.map((c) => c.id === selected.id ? { ...c, transform: { ...(c.transform||{}), x: (c.transform?.x ?? 960) - 10 } } : c)); scheduleSave() }}>◀</button>
+                  <button className="rounded px-2 py-1 bg-lift" onClick={() => { if (!selected) return; setClips((prev) => prev.map((c) => c.id === selected.id ? { ...c, transform: { ...(c.transform||{}), x: (c.transform?.x ?? 960) + 10 } } : c)); scheduleSave() }}>▶</button>
+                  <button className="rounded px-2 py-1 bg-lift" onClick={() => { if (!selected) return; setClips((prev) => prev.map((c) => c.id === selected.id ? { ...c, transform: { ...(c.transform||{}), y: (c.transform?.y ?? 540) - 10 } } : c)); scheduleSave() }}>▲</button>
+                  <button className="rounded px-2 py-1 bg-lift" onClick={() => { if (!selected) return; setClips((prev) => prev.map((c) => c.id === selected.id ? { ...c, transform: { ...(c.transform||{}), y: (c.transform?.y ?? 540) + 10 } } : c)); scheduleSave() }}>▼</button>
+                </div>
+                <div className="ml-4 text-[11px] text-dim">Crop:</div>
+                <div className="flex items-center gap-1">
+                  <button className="rounded px-2 py-1 bg-lift" onClick={() => { if (!selected) return; setClips((prev) => prev.map((c) => c.id === selected.id ? { ...c, transform: { ...(c.transform||{}), cropLeft: (c.transform?.cropLeft ?? 0) - 0.02 } } : c)); scheduleSave() }}>◀ Crop</button>
+                  <button className="rounded px-2 py-1 bg-lift" onClick={() => { if (!selected) return; setClips((prev) => prev.map((c) => c.id === selected.id ? { ...c, transform: { ...(c.transform||{}), cropLeft: (c.transform?.cropLeft ?? 0) + 0.02 } } : c)); scheduleSave() }}>Crop ▶</button>
+                </div>
+              </div>
+            </>
           )}
           <Timeline
             clips={clips}

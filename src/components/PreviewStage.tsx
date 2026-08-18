@@ -28,6 +28,7 @@ type Props = {
   isPlaying: boolean
   muted: boolean
   safeArea: boolean
+  splitPreview?: boolean
   program: ProgramFrame
   audioClips?: Clip[]
   grade: Grade
@@ -43,6 +44,7 @@ export function PreviewStage({
   isPlaying,
   muted,
   safeArea,
+  splitPreview = false,
   program,
   audioClips = [],
   grade,
@@ -284,15 +286,15 @@ export function PreviewStage({
 
           <AnimatePresence>
             {program.overlay && (
-              <motion.div
-                initial={false}
-                transition={fadeSlow}
-                className="pointer-events-none absolute whitespace-pre-wrap"
-                style={titleVisualStyle(program.overlay.clip, currentTime)}
-              >
-                {program.overlay.clip.title?.text ?? program.overlay.clip.name}
-              </motion.div>
-            )}
+                <motion.div
+                  initial={false}
+                  transition={fadeSlow}
+                  className="pointer-events-none absolute whitespace-pre-wrap"
+                  style={titleVisualStyle(program.overlay.clip, currentTime)}
+                >
+                  {renderTitleOverlay(program.overlay.clip, currentTime)}
+                </motion.div>
+              )}
           </AnimatePresence>
 
           <div className="pointer-events-none absolute top-3 left-3 z-10 flex items-center gap-2">
@@ -329,6 +331,13 @@ export function PreviewStage({
             transition={softSpring}
             className="grid size-9 place-items-center rounded-full bg-cream text-ink"
           >
+            {splitPreview && (
+              <div className="pointer-events-none absolute inset-0 z-20">
+                <div className="absolute inset-y-0 left-1/2 w-px bg-white/60" />
+                <div className="absolute top-3 left-1/4 text-white/80 text-[12px]">Before</div>
+                <div className="absolute top-3 right-1/4 text-white/80 text-[12px]">After</div>
+              </div>
+            )}
             <AnimatePresence mode="wait" initial={false}>
               <motion.span
                 key={isPlaying ? 'pause' : 'play'}
@@ -565,6 +574,26 @@ function titleVisualStyle(clip: Clip, time: number): CSSProperties {
     fontFamily: clip.title?.fontFamily, fontSize: `${fontSize / 19.2}vw`, fontWeight: clip.title?.fontWeight ?? 600,
     textAlign: (clip.title?.align as CSSProperties['textAlign']) ?? 'center',
   }
+}
+
+function renderTitleOverlay(clip: Clip, time: number) {
+  const title = clip.title
+  if (!title) return clip.name || null
+  if (!title.words || title.words.length === 0) return title.text || clip.name || null
+
+  // Highlight the active word based on timeline time (time is timeline seconds)
+  return (
+    <div>
+      {title.words.map((w, i) => {
+        const active = time >= (w.startSec ?? 0) && time < (w.endSec ?? Infinity)
+        return (
+          <span key={i} style={{ marginRight: 6, color: active ? (title.highlightColor ?? '#ffe600') : title.fill ?? '#fff', transform: active ? `scale(${title.activeScale ?? 1})` : undefined, display: 'inline-block' }}>
+            {w.word}
+          </span>
+        )
+      })}
+    </div>
+  )
 }
 
 function ProgramAudio({

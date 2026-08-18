@@ -31,7 +31,7 @@ export type Clip = {
   playback?: TimelinePlayback
   audio?: TimelineAudio
   grade?: TimelineColor
-  title?: TimelineTitle
+  title?: TimelineTitleExtended
   keyframes?: TimelineKeyframe[]
 }
 
@@ -45,6 +45,10 @@ export type TimelineAudio = { volumeDb?: number; muted?: boolean; pan?: number }
 export type TimelineColor = { exposure?: number; contrast?: number; saturation?: number; temperature?: number; tint?: number }
 export type TimelineTitle = { text: string; fontFamily?: string; fontSize?: number; fontWeight?: number; align?: string; fill?: string; stroke?: string; strokeWidth?: number; background?: string }
 export type TimelineKeyframe = { property: string; frame: number; value: number; easing?: 'linear' | 'ease_in' | 'ease_out' | 'ease_in_out' }
+
+export type TimelineCaptionWord = { word: string; startSec: number; endSec: number; startFrame?: number; durationFrames?: number }
+
+export type TimelineTitleExtended = TimelineTitle & { stylePreset?: string; highlightColor?: string; activeScale?: number; words?: TimelineCaptionWord[] }
 
 export type Track = {
   id: string
