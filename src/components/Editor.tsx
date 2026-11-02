@@ -100,6 +100,11 @@ const MEDIA_GENERATION_TOOLS = new Set([
   'generate_voiceover',
   'generate_music',
   'generate_sound_effect',
+  'polish_audio',
+  'remove_dead_air',
+  'audio_duck',
+  'audio_cleanup',
+  'volume_leveling',
 ])
 
 type EditorProps = {
@@ -2049,6 +2054,12 @@ function toolLabel(name: string, args?: unknown) {
     restore_project_revision: 'Restoring project revision',
     create_project_checkpoint: 'Creating project checkpoint',
     ask_questions: 'Asking for details',
+    polish_audio: 'Polishing audio',
+    remove_dead_air: 'Removing dead air',
+    audio_duck: 'Ducking music under speech',
+    audio_cleanup: 'Reducing background noise',
+    volume_leveling: 'Leveling loudness',
+    reframe_clip: 'Reframing the clip',
   }
   return labels[name] ?? name.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
